@@ -44,17 +44,12 @@ async def execute_handoff_to_human(pool: asyncpg.Pool, conversation_id: str, app
     
     # 2. Send farewell to customer via SunCo
     farewell = "กำลังโอนสายให้เจ้าหน้าที่สักครู่ครับ... ⏳"
-    sunco_url = f"https://{settings.zendesk_subdomain}.zendesk.com/sc/v2/apps/{app_id}/conversations/{conversation_id}/messages"
     
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            sunco_url,
-            auth=(settings.sunco_key_id, settings.sunco_key_secret),
-            json={
-                "author": {"type": "business"},
-                "content": {"type": "text", "text": farewell}
-            }
-        )
+    from app.services import zendesk
+    try:
+        await zendesk.send_reply(conversation_id, settings.sunco_app_id, farewell, settings)
+    except Exception as e:
+        log.error("handoff_reply_failed", error=str(e))
     
     # 3. Notify Zendesk Agents (Internal Note / Ticket Assignment)
     # TODO: Implementation depends on how conversation maps to ticket
@@ -70,15 +65,11 @@ async def execute_return_to_ai(pool: asyncpg.Pool, conversation_id: str, app_id:
     )
     
     confirmation = "AI Assistant กลับมาดูแลแล้วครับ 🤖"
-    sunco_url = f"https://{settings.zendesk_subdomain}.zendesk.com/sc/v2/apps/{app_id}/conversations/{conversation_id}/messages"
     
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            sunco_url,
-            auth=(settings.sunco_key_id, settings.sunco_key_secret),
-            json={
-                "author": {"type": "business"},
-                "content": {"type": "text", "text": confirmation}
-            }
-        )
+    from app.services import zendesk
+    try:
+        await zendesk.send_reply(conversation_id, settings.sunco_app_id, confirmation, settings)
+    except Exception as e:
+        log.error("return_to_ai_reply_failed", error=str(e))
+        
     log.info("Return to AI executed")

@@ -77,7 +77,7 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
             # 8. Reply via Zendesk Conversations API
             from app.services import zendesk
             try:
-                await zendesk.send_reply(conversation_id, conv['app_id'], final_reply, settings)
+                await zendesk.send_reply(conversation_id, settings.sunco_app_id, final_reply, settings)
             except Exception as e:
                 log.error("Zendesk reply failed", error=str(e))
                 raise # ARQ will retry
