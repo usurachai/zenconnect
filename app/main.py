@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
 import structlog
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -31,7 +32,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await app.state.redis.close()
     await close_pool()
 
-app = FastAPI(title="Zendesk AI Agent Service", lifespan=lifespan)
+# Behind Nginx proxy that strips /api/zendesk/
+# We use root_path to tell FastAPI the entry point is /api/zendesk
+app = FastAPI(
+    title="Zendesk AI Agent Service", 
+    lifespan=lifespan,
+    root_path="/api/zendesk",
+    docs_url=None,    # Disable default
+    redoc_url=None,
+    openapi_url=None # Disable default
+)
+
+from typing import Any
+from fastapi.responses import HTMLResponse
+
+@app.get("/health", include_in_schema=False)
+async def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url="./openapi.json", # Relative path is most robust behind stripping proxies
+        title=app.title + " - Swagger UI",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    )
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_openapi_endpoint() -> dict[str, Any]:
+    from fastapi.openapi.utils import get_openapi
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+        servers=[{"url": "/api/zendesk"}]
+    )
 
 app.include_router(webhook.router)
 app.include_router(handoff.router)

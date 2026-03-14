@@ -62,7 +62,7 @@ async def test_insert_webhook_event(mock_pool, sample_event):
     assert "INSERT INTO webhook_events" in args[0]
     assert args[1] == "evt_123"
     assert args[2] == "conv_123"
-    assert args[3] == raw_payload
+    assert args[3] == __import__('json').dumps(raw_payload)
 
 @pytest.mark.asyncio
 async def test_upsert_conversation(mock_pool, sample_event):

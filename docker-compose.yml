@@ -10,9 +10,11 @@ services:
     env_file: .env
     networks:
       - base_infra_internal-net
+    ports:
+      - "8000:8000"
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/webhook/conversations" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 10s
       retries: 3

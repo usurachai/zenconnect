@@ -1,3 +1,4 @@
+import json
 import asyncpg
 import structlog
 from datetime import datetime
@@ -18,7 +19,7 @@ async def insert_webhook_event(pool: asyncpg.Pool, event: WebhookEvent, raw_payl
         query, 
         event.id, 
         conv_id, 
-        raw_payload, 
+        json.dumps(raw_payload), 
         datetime.fromisoformat(event.createdAt.replace('Z', '+00:00'))
     )
 
@@ -102,4 +103,50 @@ async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
         conversation_id, 
         _job_id=f"flush_buffer:{conversation_id}",
         _defer_by=30
+    )
+
+async def get_conversation_history(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, limit: int = 10) -> list[dict[str, str]]:
+    """
+    Fetches the last N messages for the conversation, formatted for meowRAG.
+    """
+    query = """
+        SELECT author_type, body 
+        FROM messages 
+        WHERE conversation_id = $1 
+        ORDER BY received_at DESC 
+        LIMIT $2
+    """
+    rows = await conn.fetch(query, conversation_id, limit)
+    
+    # Reverse to get chronological order [oldest -> newest]
+    history = []
+    for row in reversed(rows):
+        role = "user" if row['author_type'] == "user" else "assistant"
+        history.append({"role": role, "content": row['body']})
+        
+    return history
+
+async def insert_outbound_message(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, body: str) -> None:
+    """
+    Inserts a message sent by the AI agent into the messages table.
+    """
+    query = """
+        INSERT INTO messages (message_id, conversation_id, author_type, channel, body, received_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+    """
+    # Generate a unique ID for the outbound message since it's not coming from a webhook event
+    import uuid
+    message_id = f"outbound_{uuid.uuid4()}"
+    
+    # We need to look up the channel from the last conversation state
+    conv = await conn.fetchrow("SELECT channel FROM conversations WHERE conversation_id = $1", conversation_id)
+    channel = conv['channel'] if conv else "api"
+
+    await conn.execute(
+        query,
+        message_id,
+        conversation_id,
+        "business",
+        channel,
+        body
     )

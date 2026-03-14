@@ -1,9 +1,9 @@
-import httpx
 import asyncpg
 import structlog
 from typing import Any
 from arq.connections import RedisSettings
 from app.config import get_settings
+from app.services import persistence
 
 logger = structlog.get_logger()
 
@@ -55,44 +55,34 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 await conn.execute("DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id)
                 return
 
-            # 4. Call RAG service
+            # 4. Prepare combined query and fetch history
+            history = await persistence.get_conversation_history(conn, conversation_id)
+            
+            # 5. Call RAG service
+            from app.services import rag
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    rag_resp = await client.post(
-                        f"{settings.rag_base_url}/v1/ask",
-                        json={"query": buffer_text, "conversation_id": conversation_id}
-                    )
-                    rag_resp.raise_for_status()
-                    answer = rag_resp.json().get("answer", "ขออภัยครับ ผมไม่สามารถประมวลผลคำตอบได้ในขณะนี้")
+                answer = await rag.ask(buffer_text, history, settings)
             except Exception as e:
                 log.error("RAG service call failed", error=str(e))
                 raise # ARQ will retry
                 
-            # 4. Prepare reply with disclaimer if first message
+            # 6. Prepare reply with disclaimer if first message
             final_reply = answer
             if not conv['is_first_msg_sent']:
                 final_reply = AI_DISCLAIMER + answer
                 
-            # 5. Reply via Zendesk Conversations API
-            app_id = conv['app_id']
-            sunco_url = f"https://{settings.zendesk_subdomain}.zendesk.com/sc/v2/apps/{app_id}/conversations/{conversation_id}/messages"
+            # 7. Save AI reply to database
+            await persistence.insert_outbound_message(conn, conversation_id, final_reply)
             
+            # 8. Reply via Zendesk Conversations API
+            from app.services import zendesk
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(
-                        sunco_url,
-                        auth=(settings.sunco_key_id, settings.sunco_key_secret),
-                        json={
-                            "author": {"type": "business"},
-                            "content": {"type": "text", "text": final_reply}
-                        }
-                    )
-                    resp.raise_for_status()
+                await zendesk.send_reply(conversation_id, conv['app_id'], final_reply, settings)
             except Exception as e:
-                log.error("Zendesk Conversations API call failed", error=str(e))
+                log.error("Zendesk reply failed", error=str(e))
                 raise # ARQ will retry
                 
-            # 6. Success: clear buffer and update state
+            # 9. Success: clear buffer and update state
             await conn.execute(
                 "DELETE FROM message_buffer WHERE conversation_id = $1",
                 conversation_id

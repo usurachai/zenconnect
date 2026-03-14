@@ -18,7 +18,9 @@ async def verify_api_key(
     settings: Settings = Depends(get_settings)
 ) -> None:
     if x_api_key != settings.conversations_webhook_secret:
-        logger.warning("Invalid API key attempt", key=x_api_key)
+        logger.warning("Invalid API key attempt", 
+                       received=x_api_key[:5] + "...", 
+                       expected=settings.conversations_webhook_secret[:5] + "...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Invalid API Key"

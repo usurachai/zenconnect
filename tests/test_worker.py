@@ -48,22 +48,21 @@ async def test_flush_buffer_happy_path(mock_ctx):
     # Mock buffer messages
     conn.fetch.return_value = [{"body": "Hello"}, {"body": "where are you?"}]
     
-    with patch("httpx.AsyncClient.post") as mock_post:
-        # Mock RAG response
-        mock_rag_resp = MagicMock()
-        mock_rag_resp.status_code = 200
-        mock_rag_resp.json.return_value = {"answer": "I am here!"}
-        
-        # Mock Conversations API response
-        mock_sunco_resp = MagicMock()
-        mock_sunco_resp.status_code = 201
-        
-        mock_post.side_effect = [mock_rag_resp, mock_sunco_resp]
+    with patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask, \
+         patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock) as mock_history, \
+         patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock), \
+         patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send_reply:
+         
+        mock_history.return_value = []
+        mock_ask.return_value = "I am here!"
         
         await worker.flush_buffer(ctx, "conv_123")
         
         # Verify RAG called with concatenated text
-        assert "Hello\nwhere are you?" in mock_post.call_args_list[0][1]["json"]["query"]
+        mock_ask.assert_called_once()
+        assert "Hello\nwhere are you?" == mock_ask.call_args[0][0]
+        
+        mock_send_reply.assert_called_once()
         
         # Verify update and clear buffer calls
         assert any("UPDATE conversations" in str(app[0]) for app in conn.execute.call_args_list)
