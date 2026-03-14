@@ -47,11 +47,11 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
             from app.services import handoff
             intent = handoff.detect_handoff_intent(buffer_text)
             if intent == "human":
-                await handoff.execute_handoff_to_human(pool, conversation_id, conv['app_id'])
+                await handoff.execute_handoff_to_human(conn, conversation_id, conv['app_id'])
                 await conn.execute("DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id)
                 return
             elif intent == "ai":
-                await handoff.execute_return_to_ai(pool, conversation_id, conv['app_id'])
+                await handoff.execute_return_to_ai(conn, conversation_id, conv['app_id'])
                 await conn.execute("DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id)
                 return
 

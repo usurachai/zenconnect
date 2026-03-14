@@ -32,12 +32,12 @@ async def post_zendesk_internal_note(subdomain: str, ticket_id: str, token: str,
     # For now, let's assume we have it or we'll find it via external_id.
     pass
 
-async def execute_handoff_to_human(pool: asyncpg.Pool, conversation_id: str, app_id: str) -> None:
+async def execute_handoff_to_human(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, app_id: str) -> None:
     settings = get_settings()
     log = logger.bind(conversation_id=conversation_id)
     
     # 1. Update DB
-    await pool.execute(
+    await conn.execute(
         "UPDATE conversations SET agent_mode = 'human', human_requested_at = NOW() WHERE conversation_id = $1",
         conversation_id
     )
@@ -55,11 +55,11 @@ async def execute_handoff_to_human(pool: asyncpg.Pool, conversation_id: str, app
     # TODO: Implementation depends on how conversation maps to ticket
     log.info("Handoff to human executed")
 
-async def execute_return_to_ai(pool: asyncpg.Pool, conversation_id: str, app_id: str) -> None:
+async def execute_return_to_ai(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, app_id: str) -> None:
     settings = get_settings()
     log = logger.bind(conversation_id=conversation_id)
     
-    await pool.execute(
+    await conn.execute(
         "UPDATE conversations SET agent_mode = 'ai' WHERE conversation_id = $1",
         conversation_id
     )
