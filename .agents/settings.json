@@ -1,0 +1,25 @@
+{
+    "permissions": {
+        "allowList": [
+            "git status",
+            "git checkout",
+            "git add",
+            "git commit",
+            "git push",
+            "git pull",
+            "git log",
+            "git diff",
+            "gh issue view",
+            "gh issue create",
+            "gh issue comment",
+            "gh issue list",
+            "gh pr create",
+            "gh pr checks",
+            "gh pr merge",
+            "gh run view",
+            "ruff check",
+            "mypy",
+            "pytest"
+        ]
+    }
+}
