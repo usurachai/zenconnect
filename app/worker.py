@@ -31,9 +31,10 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 log.info("Conversation is in human mode, skipping AI reply")
                 return
 
-            # 2. Get buffered messages
+            # 2. Get and clear buffered messages atomically
+            # Use DELETE RETURNING to prevent duplicate processing from concurrent jobs
             rows = await conn.fetch(
-                "SELECT body FROM message_buffer WHERE conversation_id = $1 ORDER BY created_at ASC",
+                "DELETE FROM message_buffer WHERE conversation_id = $1 ORDER BY created_at ASC RETURNING body",
                 conversation_id,
             )
 
@@ -92,11 +93,8 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 log.error("Zendesk reply failed", error=str(e))
                 raise  # ARQ will retry
 
-            # 9. Success: clear buffer and update state
-            await conn.execute(
-                "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
-            )
-
+            # 9. Success: update state
+            # Buffer was already deleted at the start (DELETE RETURNING)
             await conn.execute(
                 "UPDATE conversations SET is_first_msg_sent = TRUE, last_replied_at = NOW() WHERE conversation_id = $1",
                 conversation_id,
