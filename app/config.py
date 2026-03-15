@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     rag_base_url: str
     rag_api_key: str
 
+    flush_buffer_debounce_seconds: int = 30
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

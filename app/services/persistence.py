@@ -5,10 +5,14 @@ from datetime import datetime
 from typing import Any
 from app.models import WebhookEvent
 from arq import ArqRedis
+from app.config import get_settings
 
 logger = structlog.get_logger()
 
-async def insert_webhook_event(pool: asyncpg.Pool, event: WebhookEvent, raw_payload: dict[str, Any]) -> None:
+
+async def insert_webhook_event(
+    pool: asyncpg.Pool, event: WebhookEvent, raw_payload: dict[str, Any]
+) -> None:
     query = """
         INSERT INTO webhook_events (event_id, conversation_id, raw_payload, received_at)
         VALUES ($1, $2, $3, $4)
@@ -16,18 +20,19 @@ async def insert_webhook_event(pool: asyncpg.Pool, event: WebhookEvent, raw_payl
     """
     conv_id = event.payload.conversation.id if event.payload.conversation else None
     await pool.execute(
-        query, 
-        event.id, 
-        conv_id, 
-        json.dumps(raw_payload), 
-        datetime.fromisoformat(event.createdAt.replace('Z', '+00:00'))
+        query,
+        event.id,
+        conv_id,
+        json.dumps(raw_payload),
+        datetime.fromisoformat(event.createdAt.replace("Z", "+00:00")),
     )
+
 
 async def upsert_conversation(pool: asyncpg.Pool, event: WebhookEvent) -> None:
     payload = event.payload
     conv = payload.conversation
     msg = payload.message
-    
+
     if not conv or not msg:
         return
 
@@ -42,22 +47,23 @@ async def upsert_conversation(pool: asyncpg.Pool, event: WebhookEvent) -> None:
             app_id = EXCLUDED.app_id
     """
     client = msg.source.client if msg.source else None
-    
+
     await pool.execute(
         query,
         conv.id,
-        msg.source.integrationId, # Using integrationId as proxy for app_id / unique channel id
+        msg.source.integrationId,  # Using integrationId as proxy for app_id / unique channel id
         msg.source.type,
         msg.author.userId,
         msg.author.displayName or "Unknown",
-        client.avatarUrl if client else None
+        client.avatarUrl if client else None,
     )
+
 
 async def insert_message(pool: asyncpg.Pool, event: WebhookEvent) -> None:
     payload = event.payload
     msg = payload.message
     conv = payload.conversation
-    
+
     if not msg or not conv:
         return
 
@@ -73,14 +79,15 @@ async def insert_message(pool: asyncpg.Pool, event: WebhookEvent) -> None:
         msg.author.type,
         msg.source.type,
         msg.content.text or "",
-        datetime.fromisoformat(msg.received.replace('Z', '+00:00'))
+        datetime.fromisoformat(msg.received.replace("Z", "+00:00")),
     )
+
 
 async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None:
     payload = event.payload
     msg = payload.message
     conv = payload.conversation
-    
+
     if not msg or not conv:
         return
 
@@ -88,24 +95,25 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
         INSERT INTO message_buffer (conversation_id, message_id, body)
         VALUES ($1, $2, $3)
     """
-    await pool.execute(
-        query,
-        conv.id,
-        msg.id,
-        msg.content.text or ""
-    )
+    await pool.execute(query, conv.id, msg.id, msg.content.text or "")
+
 
 async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
+    settings = get_settings()
+    debounce_seconds = settings.flush_buffer_debounce_seconds
     # arq will deduplicate jobs with the same name if they are in the queue
     # Using 'flush_buffer:conv_id' as the unique job id for debouncing
     await redis.enqueue_job(
-        'flush_buffer', 
-        conversation_id, 
+        "flush_buffer",
+        conversation_id,
         _job_id=f"flush_buffer:{conversation_id}",
-        _defer_by=30
+        _defer_by=debounce_seconds,
     )
 
-async def get_conversation_history(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, limit: int = 10) -> list[dict[str, str]]:
+
+async def get_conversation_history(
+    conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, limit: int = 10
+) -> list[dict[str, str]]:
     """
     Fetches the last N messages for the conversation, formatted for meowRAG.
     """
@@ -117,16 +125,19 @@ async def get_conversation_history(conn: asyncpg.Connection | asyncpg.Pool, conv
         LIMIT $2
     """
     rows = await conn.fetch(query, conversation_id, limit)
-    
+
     # Reverse to get chronological order [oldest -> newest]
     history = []
     for row in reversed(rows):
-        role = "user" if row['author_type'] == "user" else "assistant"
-        history.append({"role": role, "content": row['body']})
-        
+        role = "user" if row["author_type"] == "user" else "assistant"
+        history.append({"role": role, "content": row["body"]})
+
     return history
 
-async def insert_outbound_message(conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, body: str) -> None:
+
+async def insert_outbound_message(
+    conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, body: str
+) -> None:
     """
     Inserts a message sent by the AI agent into the messages table.
     """
@@ -136,17 +147,13 @@ async def insert_outbound_message(conn: asyncpg.Connection | asyncpg.Pool, conve
     """
     # Generate a unique ID for the outbound message since it's not coming from a webhook event
     import uuid
-    message_id = f"outbound_{uuid.uuid4()}"
-    
-    # We need to look up the channel from the last conversation state
-    conv = await conn.fetchrow("SELECT channel FROM conversations WHERE conversation_id = $1", conversation_id)
-    channel = conv['channel'] if conv else "api"
 
-    await conn.execute(
-        query,
-        message_id,
-        conversation_id,
-        "business",
-        channel,
-        body
+    message_id = f"outbound_{uuid.uuid4()}"
+
+    # We need to look up the channel from the last conversation state
+    conv = await conn.fetchrow(
+        "SELECT channel FROM conversations WHERE conversation_id = $1", conversation_id
     )
+    channel = conv["channel"] if conv else "api"
+
+    await conn.execute(query, message_id, conversation_id, "business", channel, body)
