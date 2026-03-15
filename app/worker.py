@@ -34,7 +34,7 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
             # 2. Get and clear buffered messages atomically
             # Use DELETE RETURNING to prevent duplicate processing from concurrent jobs
             rows = await conn.fetch(
-                "DELETE FROM message_buffer WHERE conversation_id = $1 ORDER BY created_at ASC RETURNING body",
+                "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
                 conversation_id,
             )
 
