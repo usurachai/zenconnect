@@ -41,12 +41,15 @@ async def test_flush_buffer_human_mode_aborts(mock_ctx):
 
 @pytest.mark.asyncio
 async def test_flush_buffer_happy_path(mock_ctx):
+    import datetime
+
     ctx, conn = mock_ctx
-    # Mock conversation record in ai mode
+    # Mock conversation record in ai mode - set last_replied_at to long ago to avoid debounce check
     conn.fetchrow.return_value = {
         "agent_mode": "ai",
         "app_id": "app_123",
         "is_first_msg_sent": False,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
     }
     # Mock buffer messages - now returned from DELETE RETURNING via conn.fetch
     conn.fetch.return_value = [{"body": "Hello"}, {"body": "where are you?"}]

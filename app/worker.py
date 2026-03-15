@@ -31,7 +31,19 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 log.info("Conversation is in human mode, skipping AI reply")
                 return
 
-            # 2. Get and clear buffered messages atomically
+            # 2. Check if we already replied recently (debounce for webhook re-sends)
+            # If last_replied_at is within the debounce window, skip to prevent duplicate responses
+            if conv["last_replied_at"]:
+                import datetime
+
+                elapsed = (
+                    datetime.datetime.now(datetime.timezone.utc) - conv["last_replied_at"]
+                ).total_seconds()
+                if elapsed < settings.flush_buffer_debounce_seconds:
+                    log.info("Skipping - recently replied", elapsed_seconds=elapsed)
+                    return
+
+            # 3. Get and clear buffered messages atomically
             # Use DELETE RETURNING to prevent duplicate processing from concurrent jobs
             rows = await conn.fetch(
                 "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
