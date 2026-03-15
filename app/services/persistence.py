@@ -94,6 +94,7 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
     query = """
         INSERT INTO message_buffer (conversation_id, message_id, body)
         VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
     """
     await pool.execute(query, conv.id, msg.id, msg.content.text or "")
 
