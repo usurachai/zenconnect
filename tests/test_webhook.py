@@ -11,8 +11,7 @@ def mock_infra():
     with patch("app.routers.webhook.get_pool") as mock_get_pool:
         mock_pool = MagicMock()
         mock_pool.execute = AsyncMock()
-        # Return None for last_replied_at (no recent reply) so it will enqueue
-        mock_pool.fetchrow = AsyncMock(return_value={"last_replied_at": None})
+        mock_pool.fetchrow = AsyncMock(return_value={"last_message_received_at": None})
         mock_get_pool.return_value = mock_pool
 
         # We also need to mock request.app.state.redis

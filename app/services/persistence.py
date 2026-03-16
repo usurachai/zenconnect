@@ -38,13 +38,14 @@ async def upsert_conversation(pool: asyncpg.Pool, event: WebhookEvent) -> None:
 
     query = """
         INSERT INTO conversations (
-            conversation_id, app_id, channel, user_id, display_name, avatar_url, last_replied_at
+            conversation_id, app_id, channel, user_id, display_name, avatar_url, last_replied_at, last_message_received_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
         ON CONFLICT (conversation_id) DO UPDATE SET
             display_name = EXCLUDED.display_name,
             avatar_url = EXCLUDED.avatar_url,
-            app_id = EXCLUDED.app_id
+            app_id = EXCLUDED.app_id,
+            last_message_received_at = NOW()
     """
     client = msg.source.client if msg.source else None
 
@@ -102,28 +103,15 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
 async def enqueue_flush(pool: asyncpg.Pool, redis: ArqRedis, conversation_id: str) -> None:
     settings = get_settings()
     debounce_seconds = settings.flush_buffer_debounce_seconds
+    lock_key = f"flush_lock:{conversation_id}"
 
-    # Check if we recently replied - skip enqueue if within debounce window
-    # This prevents processing webhook replays that come right after an AI reply
-    row = await pool.fetchrow(
-        "SELECT last_replied_at FROM conversations WHERE conversation_id = $1",
-        conversation_id,
-    )
-    if row and row["last_replied_at"]:
-        from datetime import datetime, timezone
+    # Always refresh lock TTL - each message resets the debounce window
+    await redis.set(lock_key, "1", ex=debounce_seconds)
 
-        elapsed = (datetime.now(timezone.utc) - row["last_replied_at"]).total_seconds()
-        if elapsed < debounce_seconds:
-            # Skip enqueue - don't process duplicate messages
-            return
-
-    # arq will deduplicate jobs with the same name if they are in the queue
-    # Using 'flush_buffer:conv_id' as the unique job id for debouncing
     await redis.enqueue_job(
         "flush_buffer",
         conversation_id,
-        _job_id=f"flush_buffer:{conversation_id}",
-        _defer_by=debounce_seconds,
+        _job_id=f"flush:{conversation_id}",
     )
 
 
