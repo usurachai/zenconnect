@@ -103,8 +103,7 @@ async def test_insert_message(mock_pool, sample_event):
 
 @pytest.mark.asyncio
 async def test_enqueue_flush(mock_redis, mock_settings):
-    with patch("app.services.persistence.get_settings", return_value=mock_settings):
-        await persistence.enqueue_flush(mock_redis, "conv_123")
+    await persistence.enqueue_flush(mock_redis, "conv_123")
     mock_redis.enqueue_job.assert_called_once_with(
-        "flush_buffer", "conv_123", _job_id="flush_buffer:conv_123", _defer_by=30
+        "flush_buffer", "conv_123", _job_id="flush_buffer:conv_123"
     )

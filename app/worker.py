@@ -32,16 +32,22 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 return
 
             # 2. Check if we recently received a message (debounce from last message)
-            # If last_message_received_at is within the debounce window, skip
+            # If last_message_received_at is recent, wait until debounce passes
             if conv.get("last_message_received_at"):
                 import datetime
+                import asyncio
 
                 elapsed = (
                     datetime.datetime.now(datetime.timezone.utc) - conv["last_message_received_at"]
                 ).total_seconds()
                 if elapsed < settings.flush_buffer_debounce_seconds:
-                    log.info("Skipping - recently received message", elapsed_seconds=elapsed)
-                    return
+                    wait_time = (
+                        settings.flush_buffer_debounce_seconds - elapsed + 1
+                    )  # Add 1s buffer
+                    log.info(
+                        "Waiting for debounce", wait_seconds=wait_time, elapsed_seconds=elapsed
+                    )
+                    await asyncio.sleep(wait_time)
 
             # 3. Get and clear buffered messages atomically
             # Use DELETE RETURNING to prevent duplicate processing from concurrent jobs

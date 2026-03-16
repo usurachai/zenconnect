@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Any
 from app.models import WebhookEvent
 from arq import ArqRedis
-from app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -101,16 +100,12 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
 
 
 async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
-    settings = get_settings()
-    debounce_seconds = settings.flush_buffer_debounce_seconds
-
-    # Always enqueue - ARQ's job ID deduplication handles duplicates
-    # The _defer_by only takes effect on first enqueue
+    # Enqueue immediately - worker will handle debounce timing
+    # ARQ's job ID deduplication handles duplicate enqueues
     await redis.enqueue_job(
         "flush_buffer",
         conversation_id,
         _job_id=f"flush_buffer:{conversation_id}",
-        _defer_by=debounce_seconds,
     )
 
 
