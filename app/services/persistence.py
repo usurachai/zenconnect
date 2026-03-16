@@ -100,25 +100,12 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
     await pool.execute(query, conv.id, msg.id, msg.content.text or "")
 
 
-async def enqueue_flush(pool: asyncpg.Pool, redis: ArqRedis, conversation_id: str) -> None:
+async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
     settings = get_settings()
     debounce_seconds = settings.flush_buffer_debounce_seconds
 
-    # Check last_message_received_at - debounce from the last message, not first
-    row = await pool.fetchrow(
-        "SELECT last_message_received_at FROM conversations WHERE conversation_id = $1",
-        conversation_id,
-    )
-    if row and row["last_message_received_at"]:
-        from datetime import datetime, timezone
-
-        elapsed = (datetime.now(timezone.utc) - row["last_message_received_at"]).total_seconds()
-        if elapsed < debounce_seconds:
-            # Skip enqueue - new messages coming within debounce window
-            return
-
-    # arq will deduplicate jobs with the same name if they are in the queue
-    # Using 'flush_buffer:conv_id' as the unique job id for debouncing
+    # Always enqueue - ARQ's job ID deduplication handles duplicates
+    # The _defer_by only takes effect on first enqueue
     await redis.enqueue_job(
         "flush_buffer",
         conversation_id,

@@ -71,7 +71,7 @@ async def process_webhook_events(
         await persistence.insert_message_buffer(pool, event)
 
         # 5. Enqueue debounced flush
-        await persistence.enqueue_flush(pool, redis, conv_payload.id)
+        await persistence.enqueue_flush(redis, conv_payload.id)
 
 
 @router.post("/conversations", status_code=status.HTTP_200_OK)
