@@ -29,6 +29,7 @@ def mock_settings():
 def mock_pool():
     pool = MagicMock()
     pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock()
     return pool
 
 
@@ -101,9 +102,26 @@ async def test_insert_message(mock_pool, sample_event):
 
 
 @pytest.mark.asyncio
-async def test_enqueue_flush(mock_redis, mock_settings):
+async def test_enqueue_flush(mock_pool, mock_redis, mock_settings):
+    from datetime import datetime, timezone
+
+    # Mock old last_message_received_at - should enqueue
+    mock_pool.fetchrow.return_value = {
+        "last_message_received_at": datetime(2020, 1, 1, tzinfo=timezone.utc)
+    }
     with patch("app.services.persistence.get_settings", return_value=mock_settings):
-        await persistence.enqueue_flush(mock_redis, "conv_123")
+        await persistence.enqueue_flush(mock_pool, mock_redis, "conv_123")
     mock_redis.enqueue_job.assert_called_once_with(
         "flush_buffer", "conv_123", _job_id="flush_buffer:conv_123", _defer_by=30
     )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_flush_skips_if_recent_message(mock_pool, mock_redis, mock_settings):
+    from datetime import datetime, timezone
+
+    # Mock recent last_message_received_at - should NOT enqueue
+    mock_pool.fetchrow.return_value = {"last_message_received_at": datetime.now(timezone.utc)}
+    with patch("app.services.persistence.get_settings", return_value=mock_settings):
+        await persistence.enqueue_flush(mock_pool, mock_redis, "conv_123")
+    mock_redis.enqueue_job.assert_not_called()

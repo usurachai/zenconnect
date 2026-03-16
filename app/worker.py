@@ -31,16 +31,16 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 log.info("Conversation is in human mode, skipping AI reply")
                 return
 
-            # 2. Check if we already replied recently (debounce for webhook re-sends)
-            # If last_replied_at is within the debounce window, skip to prevent duplicate responses
-            if conv["last_replied_at"]:
+            # 2. Check if we recently received a message (debounce from last message)
+            # If last_message_received_at is within the debounce window, skip
+            if conv.get("last_message_received_at"):
                 import datetime
 
                 elapsed = (
-                    datetime.datetime.now(datetime.timezone.utc) - conv["last_replied_at"]
+                    datetime.datetime.now(datetime.timezone.utc) - conv["last_message_received_at"]
                 ).total_seconds()
                 if elapsed < settings.flush_buffer_debounce_seconds:
-                    log.info("Skipping - recently replied", elapsed_seconds=elapsed)
+                    log.info("Skipping - recently received message", elapsed_seconds=elapsed)
                     return
 
             # 3. Get and clear buffered messages atomically

@@ -5,21 +5,25 @@ from app.config import get_settings
 
 from unittest.mock import MagicMock, AsyncMock, patch
 
+
 @pytest.fixture(autouse=True)
 def mock_infra():
     with patch("app.routers.webhook.get_pool") as mock_get_pool:
         mock_pool = MagicMock()
         mock_pool.execute = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"last_message_received_at": None})
         mock_get_pool.return_value = mock_pool
-        
+
         # We also need to mock request.app.state.redis
         # This is harder via patch on the function but we can patch the transport or the app state
         app.state.redis = AsyncMock()
         yield mock_pool, app.state.redis
 
+
 @pytest.fixture
 def settings():
     return get_settings()
+
 
 @pytest.mark.asyncio
 async def test_webhook_unauthorized():
@@ -28,6 +32,7 @@ async def test_webhook_unauthorized():
         response = await ac.post("/webhook/conversations", headers={"x-api-key": "invalid"})
     assert response.status_code == 401
 
+
 @pytest.mark.asyncio
 async def test_webhook_authorized_empty_payload(settings):
     transport = ASGITransport(app=app)
@@ -35,9 +40,14 @@ async def test_webhook_authorized_empty_payload(settings):
         response = await ac.post(
             "/webhook/conversations",
             headers={"x-api-key": settings.conversations_webhook_secret},
-            json={"app": {"id": "app_123"}, "webhook": {"id": "wh_123", "version": "v2"}, "events": []}
+            json={
+                "app": {"id": "app_123"},
+                "webhook": {"id": "wh_123", "version": "v2"},
+                "events": [],
+            },
         )
     assert response.status_code == 200
+
 
 @pytest.mark.asyncio
 async def test_webhook_filters_non_message_event(settings):
@@ -49,19 +59,20 @@ async def test_webhook_filters_non_message_event(settings):
                 "id": "event_1",
                 "type": "conversation:read",
                 "createdAt": "2026-03-14T02:20:32.440Z",
-                "payload": {}
+                "payload": {},
             }
-        ]
+        ],
     }
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         response = await ac.post(
             "/webhook/conversations",
             headers={"x-api-key": settings.conversations_webhook_secret},
-            json=payload
+            json=payload,
         )
     assert response.status_code == 200
     # Implementation should skip processing but return 200
+
 
 @pytest.fixture
 def base_webhook_payload():
@@ -87,10 +98,7 @@ def base_webhook_payload():
                             "displayName": "Test User",
                             "type": "user",
                         },
-                        "content": {
-                            "type": "text",
-                            "text": "Hello AI"
-                        },
+                        "content": {"type": "text", "text": "Hello AI"},
                         "source": {
                             "type": "line",
                             "integrationId": "int_123",
@@ -100,13 +108,14 @@ def base_webhook_payload():
                                 "externalId": "ext_user_123",
                                 "id": "client_id_123",
                                 "displayName": "Test User",
-                            }
-                        }
-                    }
-                }
+                            },
+                        },
+                    },
+                },
             }
-        ]
+        ],
     }
+
 
 @pytest.mark.asyncio
 async def test_webhook_valid_line_message(settings, base_webhook_payload):
@@ -115,9 +124,10 @@ async def test_webhook_valid_line_message(settings, base_webhook_payload):
         response = await ac.post(
             "/webhook/conversations",
             headers={"x-api-key": settings.conversations_webhook_secret},
-            json=base_webhook_payload
+            json=base_webhook_payload,
         )
     assert response.status_code == 200
+
 
 @pytest.mark.asyncio
 async def test_webhook_filters_unsupported_channel(settings, base_webhook_payload):
@@ -127,6 +137,6 @@ async def test_webhook_filters_unsupported_channel(settings, base_webhook_payloa
         response = await ac.post(
             "/webhook/conversations",
             headers={"x-api-key": settings.conversations_webhook_secret},
-            json=base_webhook_payload
+            json=base_webhook_payload,
         )
     assert response.status_code == 200
