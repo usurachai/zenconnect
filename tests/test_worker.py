@@ -204,7 +204,7 @@ async def test_lock_prevents_duplicate_enqueues():
 
     # First message
     await persistence.enqueue_flush(mock_redis, "conv_123")
-    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=300)
+    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=10)  # 10s debounce
     mock_redis.enqueue_job.assert_called_once()
 
     # Second message - also enqueues and refreshes TTL

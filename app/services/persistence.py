@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from app.models import WebhookEvent
 from arq import ArqRedis
+from app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -100,11 +101,12 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
 
 
 async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
+    settings = get_settings()
+    debounce_seconds = settings.flush_buffer_debounce_seconds
     lock_key = f"flush_lock:{conversation_id}"
 
-    # Always refresh lock TTL - this extends the debounce window
-    # Each new message resets the 10s timer
-    await redis.set(lock_key, "1", ex=300)  # 5min max TTL as safety
+    # Always refresh lock TTL - each message resets the debounce window
+    await redis.set(lock_key, "1", ex=debounce_seconds)
 
     await redis.enqueue_job(
         "flush_buffer",
