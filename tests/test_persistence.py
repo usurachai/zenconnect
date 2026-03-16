@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 from app.services import persistence
 from app.models import WebhookEvent
 from app.config import Settings
@@ -103,7 +103,17 @@ async def test_insert_message(mock_pool, sample_event):
 
 @pytest.mark.asyncio
 async def test_enqueue_flush(mock_redis, mock_settings):
+    # Mock exists to return False (no job pending)
+    mock_redis.exists = AsyncMock(return_value=False)
     await persistence.enqueue_flush(mock_redis, "conv_123")
     mock_redis.enqueue_job.assert_called_once_with(
         "flush_buffer", "conv_123", _job_id="flush_buffer:conv_123"
     )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_flush_skips_if_job_pending(mock_redis, mock_settings):
+    # Mock exists to return True (job already pending)
+    mock_redis.exists = AsyncMock(return_value=True)
+    await persistence.enqueue_flush(mock_redis, "conv_123")
+    mock_redis.enqueue_job.assert_not_called()

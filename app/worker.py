@@ -56,69 +56,67 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 conversation_id,
             )
 
-            if not rows:
-                log.info("No messages in buffer")
-                return
+        if not rows:
+            log.info("No messages in buffer")
+            return
 
-            buffer_text = "\n".join([r["body"] for r in rows])
-            log.info("Flushing buffer", text=buffer_text)
+        buffer_text = "\n".join([r["body"] for r in rows])
+        log.info("Flushing buffer", text=buffer_text)
 
-            # 3. Keyword detection for handoff
-            from app.services import handoff
+        # 3. Keyword detection for handoff
+        from app.services import handoff
 
-            intent = handoff.detect_handoff_intent(buffer_text)
-            if intent == "human":
-                await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
-                await conn.execute(
-                    "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
-                )
-                return
-            elif intent == "ai":
-                await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"])
-                await conn.execute(
-                    "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
-                )
-                return
-
-            # 4. Prepare combined query and fetch history
-            history = await persistence.get_conversation_history(conn, conversation_id)
-
-            # 5. Call RAG service
-            from app.services import rag
-
-            try:
-                answer = await rag.ask(buffer_text, history, settings)
-            except Exception as e:
-                log.error("RAG service call failed", error=str(e))
-                raise  # ARQ will retry
-
-            # 6. Prepare reply with disclaimer if first message
-            final_reply = answer
-            if not conv["is_first_msg_sent"]:
-                final_reply = AI_DISCLAIMER + answer
-
-            # 7. Save AI reply to database
-            await persistence.insert_outbound_message(conn, conversation_id, final_reply)
-
-            # 8. Reply via Zendesk Conversations API
-            from app.services import zendesk
-
-            try:
-                await zendesk.send_reply(
-                    conversation_id, settings.sunco_app_id, final_reply, settings
-                )
-            except Exception as e:
-                log.error("Zendesk reply failed", error=str(e))
-                raise  # ARQ will retry
-
-            # 9. Success: update state
-            # Buffer was already deleted at the start (DELETE RETURNING)
+        intent = handoff.detect_handoff_intent(buffer_text)
+        if intent == "human":
+            await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
             await conn.execute(
-                "UPDATE conversations SET is_first_msg_sent = TRUE, last_replied_at = NOW() WHERE conversation_id = $1",
-                conversation_id,
+                "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
             )
+            return
+        elif intent == "ai":
+            await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"])
+            await conn.execute(
+                "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
+            )
+            return
 
-            log.info("Successfully replied and cleared buffer")
+        # 4. Prepare combined query and fetch history
+        history = await persistence.get_conversation_history(conn, conversation_id)
+
+        # 5. Call RAG service
+        from app.services import rag
+
+        try:
+            answer = await rag.ask(buffer_text, history, settings)
+        except Exception as e:
+            log.error("RAG service call failed", error=str(e))
+            raise  # ARQ will retry
+
+        # 6. Prepare reply with disclaimer if first message
+        final_reply = answer
+        if not conv["is_first_msg_sent"]:
+            final_reply = AI_DISCLAIMER + answer
+
+        # 7. Save AI reply to database
+        await persistence.insert_outbound_message(conn, conversation_id, final_reply)
+
+        # 8. Reply via Zendesk Conversations API
+        from app.services import zendesk
+
+        try:
+            await zendesk.send_reply(conversation_id, settings.sunco_app_id, final_reply, settings)
+        except Exception as e:
+            log.error("Zendesk reply failed", error=str(e))
+            raise  # ARQ will retry
+
+        # 9. Success: update state
+        # Buffer was already deleted at the start (DELETE RETURNING)
+        await conn.execute(
+            "UPDATE conversations SET is_first_msg_sent = TRUE, last_replied_at = NOW() WHERE conversation_id = $1",
+            conversation_id,
+        )
+
+        log.info("Successfully replied and cleared buffer")
 
 
 async def startup(ctx: dict[str, Any]) -> None:

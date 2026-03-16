@@ -100,12 +100,19 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
 
 
 async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
-    # Enqueue immediately - worker will handle debounce timing
-    # ARQ's job ID deduplication handles duplicate enqueues
+    job_id = f"flush_buffer:{conversation_id}"
+
+    # Check if job already exists in queue - don't enqueue duplicate
+    job_key = f"arq:job:{job_id}"
+    if await redis.exists(job_key):
+        # Job already pending or running - skip enqueue
+        return
+
+    # Enqueue - no defer since worker handles timing
     await redis.enqueue_job(
         "flush_buffer",
         conversation_id,
-        _job_id=f"flush_buffer:{conversation_id}",
+        _job_id=job_id,
     )
 
 
