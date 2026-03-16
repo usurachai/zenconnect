@@ -1,4 +1,5 @@
 import asyncpg
+import asyncio
 import structlog
 from typing import Any
 from arq.connections import RedisSettings
@@ -14,119 +15,118 @@ AI_DISCLAIMER = "สวัสดีครับ ผมคือ AI Assistant ข
 async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
     settings = get_settings()
     pool: asyncpg.Pool = ctx["pool"]
+    redis = ctx["redis"]
     log = logger.bind(conversation_id=conversation_id)
+    lock_key = f"flush_lock:{conversation_id}"
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # 1. Lock conversation and check mode
-            conv = await conn.fetchrow(
-                "SELECT * FROM conversations WHERE conversation_id = $1 FOR UPDATE", conversation_id
-            )
+    # Verify we hold the lock (sanity check)
+    if not await redis.exists(lock_key):
+        log.warning("No lock held for flush, skipping")
+        return
 
-            if not conv:
-                log.warning("Conversation not found during flush")
-                return
+    try:
+        # Wait for debounce period
+        log.info("Waiting for debounce", seconds=settings.flush_buffer_debounce_seconds)
+        await asyncio.sleep(settings.flush_buffer_debounce_seconds)
 
-            if conv["agent_mode"] == "human":
-                log.info("Conversation is in human mode, skipping AI reply")
-                return
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. Lock conversation and check mode
+                conv = await conn.fetchrow(
+                    "SELECT * FROM conversations WHERE conversation_id = $1 FOR UPDATE",
+                    conversation_id,
+                )
 
-            # 2. Check if we recently received a message (debounce from last message)
-            # If last_message_received_at is recent, wait until debounce passes
-            if conv.get("last_message_received_at"):
-                import datetime
-                import asyncio
+                if not conv:
+                    log.warning("Conversation not found during flush")
+                    return
 
-                elapsed = (
-                    datetime.datetime.now(datetime.timezone.utc) - conv["last_message_received_at"]
-                ).total_seconds()
-                if elapsed < settings.flush_buffer_debounce_seconds:
-                    wait_time = (
-                        settings.flush_buffer_debounce_seconds - elapsed + 1
-                    )  # Add 1s buffer
-                    log.info(
-                        "Waiting for debounce", wait_seconds=wait_time, elapsed_seconds=elapsed
+                if conv["agent_mode"] == "human":
+                    log.info("Conversation is in human mode, skipping AI reply")
+                    return
+
+                # 2. Get and clear buffered messages atomically
+                rows = await conn.fetch(
+                    "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
+                    conversation_id,
+                )
+
+                if not rows:
+                    log.info("No messages in buffer")
+                    return
+
+                buffer_text = "\n".join([r["body"] for r in rows])
+                log.info("Flushing buffer", text=buffer_text)
+
+                # 3. Keyword detection for handoff
+                from app.services import handoff
+
+                intent = handoff.detect_handoff_intent(buffer_text)
+                if intent == "human":
+                    await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
+                    return
+                elif intent == "ai":
+                    await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"])
+                    return
+
+                # 4. Prepare combined query and fetch history
+                history = await persistence.get_conversation_history(conn, conversation_id)
+
+                # 5. Call RAG service
+                from app.services import rag
+
+                try:
+                    answer = await rag.ask(buffer_text, history, settings)
+                except Exception as e:
+                    log.error("RAG service call failed", error=str(e))
+                    raise
+
+                # 6. Prepare reply with disclaimer if first message
+                final_reply = answer
+                if not conv["is_first_msg_sent"]:
+                    final_reply = AI_DISCLAIMER + answer
+
+                # 7. Save AI reply to database
+                await persistence.insert_outbound_message(conn, conversation_id, final_reply)
+
+                # 8. Reply via Zendesk Conversations API
+                from app.services import zendesk
+
+                try:
+                    await zendesk.send_reply(
+                        conversation_id, settings.sunco_app_id, final_reply, settings
                     )
-                    await asyncio.sleep(wait_time)
+                except Exception as e:
+                    log.error("Zendesk reply failed", error=str(e))
+                    raise
 
-            # 3. Get and clear buffered messages atomically
-            # Use DELETE RETURNING to prevent duplicate processing from concurrent jobs
-            rows = await conn.fetch(
-                "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
-                conversation_id,
-            )
+                # 9. Success: update state
+                await conn.execute(
+                    "UPDATE conversations SET is_first_msg_sent = TRUE, last_replied_at = NOW() WHERE conversation_id = $1",
+                    conversation_id,
+                )
 
-        if not rows:
-            log.info("No messages in buffer")
-            return
-
-        buffer_text = "\n".join([r["body"] for r in rows])
-        log.info("Flushing buffer", text=buffer_text)
-
-        # 3. Keyword detection for handoff
-        from app.services import handoff
-
-        intent = handoff.detect_handoff_intent(buffer_text)
-        if intent == "human":
-            await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
-            await conn.execute(
-                "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
-            )
-            return
-        elif intent == "ai":
-            await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"])
-            await conn.execute(
-                "DELETE FROM message_buffer WHERE conversation_id = $1", conversation_id
-            )
-            return
-
-        # 4. Prepare combined query and fetch history
-        history = await persistence.get_conversation_history(conn, conversation_id)
-
-        # 5. Call RAG service
-        from app.services import rag
-
-        try:
-            answer = await rag.ask(buffer_text, history, settings)
-        except Exception as e:
-            log.error("RAG service call failed", error=str(e))
-            raise  # ARQ will retry
-
-        # 6. Prepare reply with disclaimer if first message
-        final_reply = answer
-        if not conv["is_first_msg_sent"]:
-            final_reply = AI_DISCLAIMER + answer
-
-        # 7. Save AI reply to database
-        await persistence.insert_outbound_message(conn, conversation_id, final_reply)
-
-        # 8. Reply via Zendesk Conversations API
-        from app.services import zendesk
-
-        try:
-            await zendesk.send_reply(conversation_id, settings.sunco_app_id, final_reply, settings)
-        except Exception as e:
-            log.error("Zendesk reply failed", error=str(e))
-            raise  # ARQ will retry
-
-        # 9. Success: update state
-        # Buffer was already deleted at the start (DELETE RETURNING)
-        await conn.execute(
-            "UPDATE conversations SET is_first_msg_sent = TRUE, last_replied_at = NOW() WHERE conversation_id = $1",
-            conversation_id,
-        )
-
-        log.info("Successfully replied and cleared buffer")
+                log.info("Successfully replied and cleared buffer")
+    finally:
+        # Always release lock
+        await redis.delete(lock_key)
+        log.info("Released flush lock")
 
 
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     ctx["pool"] = await asyncpg.create_pool(dsn=settings.database_url)
+    from arq import create_pool
+
+    ctx["redis"] = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     logger.info("Worker started up")
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     pool: asyncpg.Pool = ctx["pool"]
+    redis = ctx.get("redis")
+    if redis:
+        await redis.aclose()
     await pool.close()
     logger.info("Worker shutting down")
 

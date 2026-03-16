@@ -9,6 +9,12 @@ def mock_ctx():
     pool = MagicMock()
     ctx["pool"] = pool
 
+    # Add mock redis
+    redis = MagicMock()
+    redis.exists = AsyncMock(return_value=True)  # Lock exists for tests
+    redis.delete = AsyncMock()
+    ctx["redis"] = redis
+
     conn = AsyncMock()
     # Mock pool.acquire() context manager
     pool.acquire.return_value.__aenter__.return_value = conn
