@@ -12,6 +12,7 @@ def mock_ctx():
     # Add mock redis
     redis = MagicMock()
     redis.exists = AsyncMock(return_value=True)  # Lock exists for tests
+    redis.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
     redis.delete = AsyncMock()
     ctx["redis"] = redis
 
@@ -112,6 +113,7 @@ async def test_debounce_batches_all_messages_within_window():
     pool = MagicMock()
     redis = MagicMock()
     redis.exists = AsyncMock(return_value=True)  # Lock exists
+    redis.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
     redis.delete = AsyncMock()
 
     ctx = {
@@ -170,9 +172,8 @@ async def test_debounce_batches_all_messages_within_window():
         mock_history.return_value = []
         mock_ask.return_value = "Combined response"
 
-        # Run flush (note: this will actually wait 10s, so we mock the sleep)
-        with patch("app.worker.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            await worker.flush_buffer(ctx, "conv_123")
+        # Run flush - TTL is 0 so no waiting
+        await worker.flush_buffer(ctx, "conv_123")
 
         # Verify: RAG called with ALL 3 messages combined
         mock_ask.assert_called_once()
@@ -192,23 +193,25 @@ async def test_debounce_batches_all_messages_within_window():
 @pytest.mark.asyncio
 async def test_lock_prevents_duplicate_enqueues():
     """
-    Test that when a flush is in progress (lock exists),
-    subsequent messages don't enqueue duplicate jobs.
+    Test that each message refreshes the lock TTL, extending the debounce window.
     """
     from app.services import persistence
 
     mock_redis = MagicMock()
-    # Simulate lock already exists
-    mock_redis.set = AsyncMock(return_value=False)  # NX returns False = lock exists
+    # Simulate set always succeeds (refreshes TTL)
+    mock_redis.set = AsyncMock(return_value=True)
+    mock_redis.enqueue_job = AsyncMock()
 
+    # First message
     await persistence.enqueue_flush(mock_redis, "conv_123")
+    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=300)
+    mock_redis.enqueue_job.assert_called_once()
 
-    # Verify: job NOT enqueued because lock exists
-    mock_redis.enqueue_job.assert_not_called()
-    # Verify: tried to acquire lock
-    mock_redis.set.assert_called_once()
+    # Second message - also enqueues and refreshes TTL
+    await persistence.enqueue_flush(mock_redis, "conv_123")
+    assert mock_redis.set.call_count == 2  # TTL refreshed again
 
-    print("✓ Duplicate enqueue prevented when lock exists")
+    print("✓ Lock TTL refreshed on each message")
 
 
 @pytest.mark.asyncio
@@ -245,10 +248,9 @@ async def test_concurrent_conversations_are_isolated():
     - Each conversation is processed independently
     """
     import datetime
-    from unittest.mock import MagicMock, AsyncMock, patch, call
+    from unittest.mock import MagicMock, AsyncMock, patch
     from app import worker
     from app.config import Settings
-    from app.services import persistence
 
     # Settings for both conversations
     settings = Settings(
@@ -272,6 +274,7 @@ async def test_concurrent_conversations_are_isolated():
     pool_a = MagicMock()
     redis_a = MagicMock()
     redis_a.exists = AsyncMock(return_value=True)  # Lock exists
+    redis_a.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
     redis_a.delete = AsyncMock()
 
     ctx_a = {"pool": pool_a, "redis": redis_a}
@@ -300,6 +303,7 @@ async def test_concurrent_conversations_are_isolated():
     pool_b = MagicMock()
     redis_b = MagicMock()
     redis_b.exists = AsyncMock(return_value=True)  # Lock exists
+    redis_b.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
     redis_b.delete = AsyncMock()
 
     ctx_b = {"pool": pool_b, "redis": redis_b}
@@ -362,4 +366,4 @@ async def test_concurrent_conversations_are_isolated():
 
     # Verify: Check that the RAG was called with correct texts (most reliable check)
     # This verifies the buffer contents before RAG processing
-    print(f"✓ Test output shows proper isolation in logs above")
+    print("✓ Test output shows proper isolation in logs above")

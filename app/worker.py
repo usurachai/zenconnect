@@ -25,9 +25,15 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
         return
 
     try:
-        # Wait for debounce period
-        log.info("Waiting for debounce", seconds=settings.flush_buffer_debounce_seconds)
-        await asyncio.sleep(settings.flush_buffer_debounce_seconds)
+        # Dynamic wait: check remaining TTL and wait accordingly
+        # This allows new messages to extend the debounce window
+        while True:
+            remaining_ttl = await redis.ttl(lock_key)
+            if remaining_ttl <= 0:
+                # Lock expired or not set, proceed to flush
+                break
+            log.info("Waiting for debounce", remaining_seconds=remaining_ttl)
+            await asyncio.sleep(remaining_ttl + 1)  # Wait for TTL to expire + buffer
 
         async with pool.acquire() as conn:
             async with conn.transaction():

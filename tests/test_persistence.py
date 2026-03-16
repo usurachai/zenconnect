@@ -102,21 +102,21 @@ async def test_insert_message(mock_pool, sample_event):
 
 
 @pytest.mark.asyncio
-async def test_enqueue_flush_acquires_lock(mock_redis, mock_settings):
-    # Mock set to return True (lock acquired)
+async def test_enqueue_flush_always_refreshes_lock(mock_redis, mock_settings):
+    # Mock set to return True (always succeeds - we refresh TTL)
     mock_redis.set = AsyncMock(return_value=True)
     await persistence.enqueue_flush(mock_redis, "conv_123")
-    # Should set lock with NX (only if not exists)
-    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", nx=True, ex=300)
+    # Should always set lock (refreshing TTL)
+    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=300)
     mock_redis.enqueue_job.assert_called_once_with(
         "flush_buffer", "conv_123", _job_id="flush:conv_123"
     )
 
 
 @pytest.mark.asyncio
-async def test_enqueue_flush_skips_if_lock_exists(mock_redis, mock_settings):
-    # Mock set to return False (lock already exists)
-    mock_redis.set = AsyncMock(return_value=False)
+async def test_enqueue_flush_always_enqueues(mock_redis, mock_settings):
+    # Mock set - always enqueues (no NX check anymore)
+    mock_redis.set = AsyncMock(return_value=True)
     await persistence.enqueue_flush(mock_redis, "conv_123")
-    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", nx=True, ex=300)
-    mock_redis.enqueue_job.assert_not_called()
+    # Verify enqueue was called
+    mock_redis.enqueue_job.assert_called_once()

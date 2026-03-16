@@ -102,10 +102,9 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
 async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
     lock_key = f"flush_lock:{conversation_id}"
 
-    # Try to acquire lock - atomic set if not exists
-    # NX = only set if not exists, EX = expire after 5 minutes (safety net)
-    if not await redis.set(lock_key, "1", nx=True, ex=300):
-        return  # Already processing, skip enqueue
+    # Always refresh lock TTL - this extends the debounce window
+    # Each new message resets the 10s timer
+    await redis.set(lock_key, "1", ex=300)  # 5min max TTL as safety
 
     await redis.enqueue_job(
         "flush_buffer",
