@@ -100,7 +100,7 @@ async def insert_message_buffer(pool: asyncpg.Pool, event: WebhookEvent) -> None
     await pool.execute(query, conv.id, msg.id, msg.content.text or "")
 
 
-async def enqueue_flush(redis: ArqRedis, conversation_id: str) -> None:
+async def enqueue_flush(pool: asyncpg.Pool, redis: ArqRedis, conversation_id: str) -> None:
     settings = get_settings()
     debounce_seconds = settings.flush_buffer_debounce_seconds
     lock_key = f"flush_lock:{conversation_id}"
