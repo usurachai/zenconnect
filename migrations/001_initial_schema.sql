@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     is_first_msg_sent BOOLEAN NOT NULL DEFAULT FALSE,
     human_requested_at TIMESTAMPTZ,
     last_replied_at TIMESTAMPTZ,
+    last_message_received_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
