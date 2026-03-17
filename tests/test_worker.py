@@ -9,12 +9,9 @@ def mock_ctx():
     pool = MagicMock()
     ctx["pool"] = pool
 
-    # Add mock redis
-    redis = MagicMock()
-    redis.exists = AsyncMock(return_value=True)  # Lock exists for tests
-    redis.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
-    redis.delete = AsyncMock()
-    ctx["redis"] = redis
+    # Remove lock mock attributes since redis is no longer directly used in flush_buffer
+    ctx["redis"] = MagicMock()
+
 
     conn = AsyncMock()
     # Mock pool.acquire() context manager
@@ -112,9 +109,6 @@ async def test_debounce_batches_all_messages_within_window():
     # Setup
     pool = MagicMock()
     redis = MagicMock()
-    redis.exists = AsyncMock(return_value=True)  # Lock exists
-    redis.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
-    redis.delete = AsyncMock()
 
     ctx = {
         "pool": pool,
@@ -184,57 +178,10 @@ async def test_debounce_batches_all_messages_within_window():
         assert "Message 2" in combined_text
         assert "Message 3" in combined_text
 
-        # Verify: Lock released after processing
-        redis.delete.assert_called_once_with("flush_lock:conv_123")
-
         print(f"✓ All 3 messages batched: {combined_text}")
 
 
-@pytest.mark.asyncio
-async def test_lock_prevents_duplicate_enqueues():
-    """
-    Test that each message refreshes the lock TTL, extending the debounce window.
-    """
-    from app.services import persistence
 
-    mock_redis = MagicMock()
-    # Simulate set always succeeds (refreshes TTL)
-    mock_redis.set = AsyncMock(return_value=True)
-    mock_redis.enqueue_job = AsyncMock()
-
-    # First message
-    await persistence.enqueue_flush(mock_redis, "conv_123")
-    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=10)  # 10s debounce
-    mock_redis.enqueue_job.assert_called_once()
-
-    # Second message - also enqueues and refreshes TTL
-    await persistence.enqueue_flush(mock_redis, "conv_123")
-    assert mock_redis.set.call_count == 2  # TTL refreshed again
-
-    print("✓ Lock TTL refreshed on each message")
-
-
-@pytest.mark.asyncio
-async def test_lock_allows_new_batch_after_completion():
-    """
-    Test that after a flush completes (lock released),
-    new messages can trigger a new flush.
-    """
-    from app.services import persistence
-
-    mock_redis = MagicMock()
-    # Simulate lock being available (returns True = lock acquired)
-    mock_redis.set = AsyncMock(return_value=True)
-    mock_redis.enqueue_job = AsyncMock()
-
-    # First message acquires lock
-    await persistence.enqueue_flush(mock_redis, "conv_123")
-
-    # Verify: lock acquired and job enqueued
-    mock_redis.set.assert_called_once()
-    mock_redis.enqueue_job.assert_called_once()
-
-    print("✓ New batch can start after previous completes")
 
 
 @pytest.mark.asyncio
@@ -272,12 +219,7 @@ async def test_concurrent_conversations_are_isolated():
 
     # === Setup Conversation A ===
     pool_a = MagicMock()
-    redis_a = MagicMock()
-    redis_a.exists = AsyncMock(return_value=True)  # Lock exists
-    redis_a.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
-    redis_a.delete = AsyncMock()
-
-    ctx_a = {"pool": pool_a, "redis": redis_a}
+    ctx_a = {"pool": pool_a}
     conn_a = AsyncMock()
     pool_a.acquire.return_value.__aenter__.return_value = conn_a
 
@@ -301,12 +243,7 @@ async def test_concurrent_conversations_are_isolated():
 
     # === Setup Conversation B ===
     pool_b = MagicMock()
-    redis_b = MagicMock()
-    redis_b.exists = AsyncMock(return_value=True)  # Lock exists
-    redis_b.ttl = AsyncMock(return_value=0)  # TTL expired - don't wait
-    redis_b.delete = AsyncMock()
-
-    ctx_b = {"pool": pool_b, "redis": redis_b}
+    ctx_b = {"pool": pool_b}
     conn_b = AsyncMock()
     pool_b.acquire.return_value.__aenter__.return_value = conn_b
 
@@ -341,7 +278,6 @@ async def test_concurrent_conversations_are_isolated():
 
     with (
         patch("app.worker.get_settings", return_value=settings),
-        patch("app.worker.asyncio.sleep", new_callable=AsyncMock),
         patch("app.services.rag.ask", side_effect=mock_rag_ask),
         patch(
             "app.services.persistence.get_conversation_history", new_callable=AsyncMock
@@ -356,10 +292,6 @@ async def test_concurrent_conversations_are_isolated():
         await worker.flush_buffer(ctx_b, "conv_B")
 
     # === Verify ===
-
-    # Verify: Each conversation got its own lock
-    assert redis_a.delete.call_args[0][0] == "flush_lock:conv_A"
-    assert redis_b.delete.call_args[0][0] == "flush_lock:conv_B"
 
     # Verify: Both conversations were processed
     assert len(send_reply_calls) == 2

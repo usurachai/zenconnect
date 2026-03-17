@@ -102,21 +102,37 @@ async def test_insert_message(mock_pool, sample_event):
 
 
 @pytest.mark.asyncio
-async def test_enqueue_flush_always_refreshes_lock(mock_redis, mock_settings):
-    # Mock set to return True (always succeeds - we refresh TTL)
-    mock_redis.set = AsyncMock(return_value=True)
-    await persistence.enqueue_flush(mock_redis, "conv_123")
-    # Should always set lock (refreshing TTL with debounce seconds from settings)
-    mock_redis.set.assert_called_once_with("flush_lock:conv_123", "1", ex=10)  # 10s from settings
-    mock_redis.enqueue_job.assert_called_once_with(
-        "flush_buffer", "conv_123", _job_id="flush:conv_123"
-    )
+async def test_enqueue_flush_defers_by_settings(mock_redis, mock_settings):
+    from datetime import timedelta
+    from unittest.mock import patch
+    with (
+        patch("app.services.persistence.get_settings", return_value=mock_settings),
+        patch("app.telemetry.get_current_trace_id", return_value=None),
+    ):
+        await persistence.enqueue_flush(mock_redis, "conv_123")
+        mock_redis.enqueue_job.assert_called_once_with(
+            "flush_buffer",
+            "conv_123",
+            _job_id="flush:conv_123",
+            _defer_by=timedelta(seconds=mock_settings.flush_buffer_debounce_seconds),
+            parent_trace_id=None,
+        )
 
 
 @pytest.mark.asyncio
-async def test_enqueue_flush_always_enqueues(mock_redis, mock_settings):
-    # Mock set - always enqueues (no NX check anymore)
-    mock_redis.set = AsyncMock(return_value=True)
-    await persistence.enqueue_flush(mock_redis, "conv_123")
-    # Verify enqueue was called
-    mock_redis.enqueue_job.assert_called_once()
+async def test_enqueue_flush_passes_parent_trace_id(mock_redis, mock_settings):
+    from datetime import timedelta
+    from unittest.mock import patch
+    trace_id = "a" * 32
+    with (
+        patch("app.services.persistence.get_settings", return_value=mock_settings),
+        patch("app.telemetry.get_current_trace_id", return_value=trace_id),
+    ):
+        await persistence.enqueue_flush(mock_redis, "conv_123")
+        mock_redis.enqueue_job.assert_called_once_with(
+            "flush_buffer",
+            "conv_123",
+            _job_id="flush:conv_123",
+            _defer_by=timedelta(seconds=mock_settings.flush_buffer_debounce_seconds),
+            parent_trace_id=trace_id,
+        )

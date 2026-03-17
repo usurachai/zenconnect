@@ -10,7 +10,12 @@ dependencies = [
     "arq",
     "httpx",
     "pydantic-settings",
-    "structlog"
+    "structlog",
+    "opentelemetry-sdk",
+    "opentelemetry-api",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-httpx",
+    "opentelemetry-exporter-otlp-proto-grpc",
 ]
 
 [project.optional-dependencies]
