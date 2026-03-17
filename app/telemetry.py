@@ -14,6 +14,32 @@ from opentelemetry.trace import StatusCode
 SERVICE_NAME = "zenconnect"
 
 
+def configure_logging() -> None:
+    """Configure structlog with JSON output, trace injection, and bound service/environment.
+
+    Call this once at process startup — from both app/main.py and app/worker.py.
+    """
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            inject_trace_context,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(20),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+    structlog.contextvars.bind_contextvars(
+        service=SERVICE_NAME,
+        environment=os.getenv("ENV", "development"),
+    )
+
+
 def setup_tracing() -> None:
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if not endpoint:

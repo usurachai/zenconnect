@@ -1,10 +1,8 @@
-import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
-import structlog
 from arq import create_pool
 from arq.connections import RedisSettings
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -12,30 +10,10 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from app.db import init_pool, close_pool
 from app.config import get_settings
 from app.routers import webhook, handoff, debug
-from app.telemetry import SERVICE_NAME, setup_tracing, inject_trace_context
+from app.telemetry import configure_logging, setup_tracing
 
+configure_logging()
 setup_tracing()
-
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.dev.set_exc_info,
-        inject_trace_context,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(20),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-
-structlog.contextvars.bind_contextvars(
-    service=SERVICE_NAME,
-    environment=os.getenv("ENV", "development"),
-)
 
 
 @asynccontextmanager

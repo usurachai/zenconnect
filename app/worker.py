@@ -7,7 +7,7 @@ from arq import func
 from opentelemetry import trace
 from app.config import get_settings
 from app.services import persistence, handoff, rag, zendesk
-from app.telemetry import handle_exception
+from app.telemetry import configure_logging, handle_exception, setup_tracing
 
 logger = structlog.get_logger()
 tracer = trace.get_tracer(__name__)
@@ -109,6 +109,8 @@ async def flush_buffer(
 
 
 async def startup(ctx: dict[str, Any]) -> None:
+    configure_logging()
+    setup_tracing()
     settings = get_settings()
     ctx["pool"] = await asyncpg.create_pool(dsn=settings.database_url)
     from arq import create_pool
