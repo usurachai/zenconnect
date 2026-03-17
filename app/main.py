@@ -3,26 +3,17 @@ from typing import Any, AsyncGenerator
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
-import structlog
 from arq import create_pool
 from arq.connections import RedisSettings
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from app.db import init_pool, close_pool
 from app.config import get_settings
 from app.routers import webhook, handoff, debug
+from app.telemetry import configure_logging, setup_tracing
 
-structlog.configure(
-    processors=[
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.dev.set_exc_info,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(20),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
+configure_logging()
+setup_tracing()
 
 
 @asynccontextmanager
@@ -45,6 +36,9 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,  # Disable default
 )
+
+FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
+HTTPXClientInstrumentor().instrument()
 
 
 @app.get("/health", include_in_schema=False)

@@ -1,39 +1,33 @@
 import asyncpg
-import asyncio
+import json
 import structlog
 from typing import Any
 from arq.connections import RedisSettings
 from arq import func
+from opentelemetry import trace
 from app.config import get_settings
-from app.services import persistence
+from app.services import persistence, handoff, rag, zendesk
+from app.telemetry import configure_logging, handle_exception, setup_tracing
 
 logger = structlog.get_logger()
+tracer = trace.get_tracer(__name__)
 
 AI_DISCLAIMER = "สวัสดีครับ ผมคือ AI Assistant ของ Kasikorn Bank ยินดีที่ได้ดูแลคุณครับ 🤖\n\n"
 
 
-async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
-    settings = get_settings()
-    pool: asyncpg.Pool = ctx["pool"]
-    redis = ctx["redis"]
-    log = logger.bind(conversation_id=conversation_id)
-    lock_key = f"flush_lock:{conversation_id}"
+async def flush_buffer(
+    ctx: dict[str, Any],
+    conversation_id: str,
+    parent_trace_id: str | None = None,
+) -> None:
+    with tracer.start_as_current_span("worker.flush_buffer") as span:
+        span.set_attribute("conversation_id", conversation_id)
+        if parent_trace_id:
+            span.set_attribute("parent_trace_id", parent_trace_id)
 
-    # Verify we hold the lock (sanity check)
-    if not await redis.exists(lock_key):
-        log.warning("No lock held for flush, skipping")
-        return
-
-    try:
-        # Dynamic wait: check remaining TTL and wait accordingly
-        # This allows new messages to extend the debounce window
-        while True:
-            remaining_ttl = await redis.ttl(lock_key)
-            if remaining_ttl <= 0:
-                # Lock expired or not set, proceed to flush
-                break
-            log.info("Waiting for debounce", remaining_seconds=remaining_ttl)
-            await asyncio.sleep(remaining_ttl + 1)  # Wait for TTL to expire + buffer
+        settings = get_settings()
+        pool: asyncpg.Pool = ctx["pool"]
+        log = logger.bind(conversation_id=conversation_id, parent_trace_id=parent_trace_id)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -51,6 +45,11 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                     log.info("Conversation is in human mode, skipping AI reply")
                     return
 
+                span.set_attribute("app_id", conv["app_id"])
+                span.set_attribute("channel", conv["channel"])
+                span.set_attribute("agent_mode", conv["agent_mode"])
+                span.set_attribute("is_first_msg_sent", bool(conv["is_first_msg_sent"]))
+
                 # 2. Get and clear buffered messages atomically
                 rows = await conn.fetch(
                     "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
@@ -63,11 +62,12 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
 
                 buffer_text = "\n".join([r["body"] for r in rows])
                 log.info("Flushing buffer", text=buffer_text)
+                span.set_attribute("buffer_size", len(rows))
+                span.set_attribute("buffer_text", buffer_text)
 
                 # 3. Keyword detection for handoff
-                from app.services import handoff
-
                 intent = handoff.detect_handoff_intent(buffer_text)
+                span.set_attribute("handoff_intent", intent or "none")
                 if intent == "human":
                     await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
                     return
@@ -79,32 +79,43 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 history = await persistence.get_conversation_history(conn, conversation_id)
 
                 # 5. Call RAG service
-                from app.services import rag
-
-                try:
-                    answer = await rag.ask(buffer_text, history, settings)
-                except Exception as e:
-                    log.error("RAG service call failed", error=str(e))
-                    raise
+                with tracer.start_as_current_span("rag.ask") as rag_span:
+                    rag_span.set_attribute("rag.url", f"{settings.rag_base_url}/api/v1/ask")
+                    rag_span.set_attribute("rag.query", buffer_text)
+                    rag_span.set_attribute("rag.query_length", len(buffer_text))
+                    rag_span.set_attribute("rag.history", json.dumps(history, ensure_ascii=False))
+                    rag_span.set_attribute("rag.history_length", len(history))
+                    rag_span.set_attribute("rag.top_k", 5)
+                    try:
+                        answer = await rag.ask(buffer_text, history, settings)
+                        rag_span.set_attribute("rag.answer", answer)
+                        rag_span.set_attribute("rag.answer_length", len(answer))
+                    except Exception as e:
+                        handle_exception(rag_span, e)
+                        raise
 
                 # 6. Prepare reply with disclaimer if first message
                 final_reply = answer
                 if not conv["is_first_msg_sent"]:
                     final_reply = AI_DISCLAIMER + answer
 
+                span.set_attribute("reply_length", len(final_reply))
+
                 # 7. Save AI reply to database
                 await persistence.insert_outbound_message(conn, conversation_id, final_reply)
 
                 # 8. Reply via Zendesk Conversations API
-                from app.services import zendesk
-
-                try:
-                    await zendesk.send_reply(
-                        conversation_id, settings.sunco_app_id, final_reply, settings
-                    )
-                except Exception as e:
-                    log.error("Zendesk reply failed", error=str(e))
-                    raise
+                with tracer.start_as_current_span("zendesk.send_reply") as zd_span:
+                    zd_span.set_attribute("conversation_id", conversation_id)
+                    zd_span.set_attribute("app_id", settings.sunco_app_id)
+                    zd_span.set_attribute("reply_length", len(final_reply))
+                    try:
+                        await zendesk.send_reply(
+                            conversation_id, settings.sunco_app_id, final_reply, settings
+                        )
+                    except Exception as e:
+                        handle_exception(zd_span, e)
+                        raise
 
                 # 9. Success: update state
                 await conn.execute(
@@ -113,13 +124,11 @@ async def flush_buffer(ctx: dict[str, Any], conversation_id: str) -> None:
                 )
 
                 log.info("Successfully replied and cleared buffer")
-    finally:
-        # Always release lock
-        await redis.delete(lock_key)
-        log.info("Released flush lock")
 
 
 async def startup(ctx: dict[str, Any]) -> None:
+    configure_logging()
+    setup_tracing()
     settings = get_settings()
     ctx["pool"] = await asyncpg.create_pool(dsn=settings.database_url)
     from arq import create_pool
