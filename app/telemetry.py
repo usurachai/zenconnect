@@ -14,18 +14,27 @@ from opentelemetry.trace import StatusCode
 SERVICE_NAME = "zenconnect"
 
 
+def _add_service_context(
+    logger: Any, method: str, event_dict: MutableMapping[str, Any]
+) -> Mapping[str, Any]:
+    """Structlog processor — stamps every log line with service and environment."""
+    event_dict["service"] = SERVICE_NAME
+    event_dict["environment"] = os.getenv("ENV", "development")
+    return event_dict
+
+
 def configure_logging() -> None:
-    """Configure structlog with JSON output, trace injection, and bound service/environment.
+    """Configure structlog with JSON output, trace injection, and service/environment fields.
 
     Call this once at process startup — from both app/main.py and app/worker.py.
     """
     structlog.configure(
         processors=[
-            structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
             inject_trace_context,
+            _add_service_context,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer(),
         ],
@@ -33,10 +42,6 @@ def configure_logging() -> None:
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
-    )
-    structlog.contextvars.bind_contextvars(
-        service=SERVICE_NAME,
-        environment=os.getenv("ENV", "development"),
     )
 
 
