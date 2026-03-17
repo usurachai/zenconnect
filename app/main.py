@@ -37,7 +37,7 @@ app = FastAPI(
     openapi_url=None,  # Disable default
 )
 
-FastAPIInstrumentor.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
 HTTPXClientInstrumentor().instrument()
 
 
