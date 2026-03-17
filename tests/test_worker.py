@@ -18,9 +18,10 @@ def mock_ctx():
     pool.acquire.return_value.__aenter__.return_value = conn
 
     # Mock conn.transaction() context manager
+    # __aexit__ must return False so exceptions propagate (truthy would suppress them)
     transaction_manager = MagicMock()
     transaction_manager.__aenter__ = AsyncMock()
-    transaction_manager.__aexit__ = AsyncMock()
+    transaction_manager.__aexit__ = AsyncMock(return_value=False)
     conn.transaction = MagicMock(return_value=transaction_manager)
 
     return ctx, conn
@@ -121,7 +122,7 @@ async def test_debounce_batches_all_messages_within_window():
 
     transaction_manager = MagicMock()
     transaction_manager.__aenter__ = AsyncMock()
-    transaction_manager.__aexit__ = AsyncMock()
+    transaction_manager.__aexit__ = AsyncMock(return_value=False)
     conn.transaction = MagicMock(return_value=transaction_manager)
 
     # Simulate: buffer has 3 messages (simulating messages arrived during wait)
@@ -303,3 +304,184 @@ async def test_concurrent_conversations_are_isolated():
     # Verify: Check that the RAG was called with correct texts (most reliable check)
     # This verifies the buffer contents before RAG processing
     print("✓ Test output shows proper isolation in logs above")
+
+
+# ---------------------------------------------------------------------------
+# Error path tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_flush_buffer_conversation_not_found(mock_ctx):
+    """When conversation row is missing, worker returns early without calling RAG."""
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = None  # No conversation found
+
+    with patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask:
+        await worker.flush_buffer(ctx, "conv_missing")
+
+    mock_ask.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_empty_buffer_returns_early(mock_ctx):
+    """When buffer is empty after lock acquisition, worker returns without calling RAG."""
+    import datetime
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = []  # Empty buffer
+
+    with patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask:
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_ask.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_rag_error_propagates(mock_ctx):
+    """RAG service failure must propagate so ARQ can retry the job."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    with (
+        patch("app.services.rag.ask", side_effect=httpx.HTTPStatusError(
+            "500", request=MagicMock(), response=MagicMock(status_code=500)
+        )),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        with pytest.raises(httpx.HTTPStatusError):
+            await worker.flush_buffer(ctx, "conv_123")
+
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_zendesk_error_propagates(mock_ctx):
+    """Zendesk failure must propagate so ARQ can retry the job."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    with (
+        patch("app.services.rag.ask", new_callable=AsyncMock, return_value="AI reply"),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", side_effect=httpx.HTTPStatusError(
+            "503", request=MagicMock(), response=MagicMock(status_code=503)
+        )),
+    ):
+        with pytest.raises(httpx.HTTPStatusError):
+            await worker.flush_buffer(ctx, "conv_123")
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_return_to_ai_handoff(mock_ctx):
+    """Return-to-AI keyword triggers execute_return_to_ai, not RAG."""
+    import datetime
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "back to ai"}]
+
+    with (
+        patch("app.services.handoff.execute_return_to_ai", new_callable=AsyncMock) as mock_return_ai,
+        patch("app.services.handoff.execute_handoff_to_human", new_callable=AsyncMock) as mock_human,
+        patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_return_ai.assert_called_once()
+    mock_human.assert_not_called()
+    mock_ask.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_prepends_disclaimer_on_first_message(mock_ctx):
+    """AI_DISCLAIMER is prepended only when is_first_msg_sent is False."""
+    import datetime
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": False,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    sent_text: list[str] = []
+
+    async def capture_send(conv_id, app_id, text, settings):
+        sent_text.append(text)
+
+    with (
+        patch("app.services.rag.ask", new_callable=AsyncMock, return_value="My answer"),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", side_effect=capture_send),
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    assert len(sent_text) == 1
+    assert sent_text[0].startswith(worker.AI_DISCLAIMER)
+    assert "My answer" in sent_text[0]
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_no_disclaimer_on_subsequent_messages(mock_ctx):
+    """AI_DISCLAIMER must NOT be added when is_first_msg_sent is True."""
+    import datetime
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello again"}]
+
+    sent_text: list[str] = []
+
+    async def capture_send(conv_id, app_id, text, settings):
+        sent_text.append(text)
+
+    with (
+        patch("app.services.rag.ask", new_callable=AsyncMock, return_value="Follow-up answer"),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", side_effect=capture_send),
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    assert len(sent_text) == 1
+    assert not sent_text[0].startswith(worker.AI_DISCLAIMER)
+    assert sent_text[0] == "Follow-up answer"
