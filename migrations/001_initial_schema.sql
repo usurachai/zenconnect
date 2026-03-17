@@ -1,7 +1,5 @@
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
 CREATE TABLE IF NOT EXISTS tenants (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subdomain TEXT UNIQUE NOT NULL,
     sunco_app_id TEXT NOT NULL,
     sunco_key_id TEXT NOT NULL,
@@ -10,7 +8,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id TEXT UNIQUE NOT NULL,
     tenant_id UUID REFERENCES tenants(id),
     app_id TEXT NOT NULL,
@@ -27,7 +25,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     message_id TEXT UNIQUE NOT NULL,
     conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
     author_type TEXT NOT NULL,
@@ -37,7 +35,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE TABLE IF NOT EXISTS message_buffer (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
     message_id TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -45,7 +43,7 @@ CREATE TABLE IF NOT EXISTS message_buffer (
 );
 
 CREATE TABLE IF NOT EXISTS webhook_events (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id TEXT UNIQUE NOT NULL,
     conversation_id TEXT,
     raw_payload JSONB NOT NULL,
