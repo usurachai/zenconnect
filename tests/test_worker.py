@@ -51,6 +51,7 @@ async def test_flush_buffer_happy_path(mock_ctx):
     # Mock conversation record in ai mode - set last_replied_at to long ago to avoid debounce check
     conn.fetchrow.return_value = {
         "agent_mode": "ai",
+        "channel": "line",
         "app_id": "app_123",
         "is_first_msg_sent": False,
         "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
@@ -132,6 +133,7 @@ async def test_debounce_batches_all_messages_within_window():
 
     conn.fetchrow.return_value = {
         "agent_mode": "ai",
+        "channel": "line",
         "app_id": "app_123",
         "is_first_msg_sent": False,
         "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
@@ -236,6 +238,7 @@ async def test_concurrent_conversations_are_isolated():
     ]
     conn_a.fetchrow.return_value = {
         "agent_mode": "ai",
+        "channel": "line",
         "app_id": "app_A",
         "is_first_msg_sent": False,
         "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
@@ -259,6 +262,7 @@ async def test_concurrent_conversations_are_isolated():
     ]
     conn_b.fetchrow.return_value = {
         "agent_mode": "ai",
+        "channel": "line",
         "app_id": "app_B",
         "is_first_msg_sent": False,
         "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),

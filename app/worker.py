@@ -45,6 +45,11 @@ async def flush_buffer(
                     log.info("Conversation is in human mode, skipping AI reply")
                     return
 
+                span.set_attribute("app_id", conv["app_id"])
+                span.set_attribute("channel", conv["channel"])
+                span.set_attribute("agent_mode", conv["agent_mode"])
+                span.set_attribute("is_first_msg_sent", bool(conv["is_first_msg_sent"]))
+
                 # 2. Get and clear buffered messages atomically
                 rows = await conn.fetch(
                     "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
@@ -61,6 +66,7 @@ async def flush_buffer(
 
                 # 3. Keyword detection for handoff
                 intent = handoff.detect_handoff_intent(buffer_text)
+                span.set_attribute("handoff_intent", intent or "none")
                 if intent == "human":
                     await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"])
                     return
@@ -68,15 +74,18 @@ async def flush_buffer(
                     await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"])
                     return
 
-                span.set_attribute("agent_mode", conv["agent_mode"])
-
                 # 4. Prepare combined query and fetch history
                 history = await persistence.get_conversation_history(conn, conversation_id)
 
                 # 5. Call RAG service
                 with tracer.start_as_current_span("rag.ask") as rag_span:
+                    rag_span.set_attribute("rag.url", f"{settings.rag_base_url}/api/v1/ask")
+                    rag_span.set_attribute("rag.query_length", len(buffer_text))
+                    rag_span.set_attribute("rag.history_length", len(history))
+                    rag_span.set_attribute("rag.top_k", 5)
                     try:
                         answer = await rag.ask(buffer_text, history, settings)
+                        rag_span.set_attribute("rag.answer_length", len(answer))
                     except Exception as e:
                         handle_exception(rag_span, e)
                         raise
@@ -86,11 +95,16 @@ async def flush_buffer(
                 if not conv["is_first_msg_sent"]:
                     final_reply = AI_DISCLAIMER + answer
 
+                span.set_attribute("reply_length", len(final_reply))
+
                 # 7. Save AI reply to database
                 await persistence.insert_outbound_message(conn, conversation_id, final_reply)
 
                 # 8. Reply via Zendesk Conversations API
                 with tracer.start_as_current_span("zendesk.send_reply") as zd_span:
+                    zd_span.set_attribute("conversation_id", conversation_id)
+                    zd_span.set_attribute("app_id", settings.sunco_app_id)
+                    zd_span.set_attribute("reply_length", len(final_reply))
                     try:
                         await zendesk.send_reply(
                             conversation_id, settings.sunco_app_id, final_reply, settings
