@@ -92,3 +92,77 @@ def test_setup_tracing_skips_when_no_endpoint():
     os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
     # Should not raise
     setup_tracing()
+
+
+def test_setup_tracing_registers_provider_when_endpoint_set(reset_tracer_provider):
+    from app.telemetry import setup_tracing
+    from opentelemetry.sdk.trace import TracerProvider
+    import os
+
+    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+    try:
+        setup_tracing()
+        provider = trace.get_tracer_provider()
+        assert isinstance(provider, TracerProvider)
+    finally:
+        os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+
+
+def test_add_service_context_injects_service_and_environment():
+    from app.telemetry import _add_service_context
+    import os
+
+    os.environ["ENV"] = "production"
+    try:
+        event_dict: dict = {}
+        result = _add_service_context(None, "info", event_dict)
+        assert result["service"] == "zenconnect"
+        assert result["environment"] == "production"
+    finally:
+        os.environ.pop("ENV", None)
+
+
+def test_add_service_context_defaults_to_development():
+    from app.telemetry import _add_service_context
+    import os
+
+    os.environ.pop("ENV", None)
+    event_dict: dict = {}
+    result = _add_service_context(None, "info", event_dict)
+    assert result["environment"] == "development"
+
+
+def test_configure_logging_configures_structlog():
+    import structlog
+    from app.telemetry import configure_logging
+
+    configure_logging()
+
+    config = structlog.get_config()
+    processor_names = [type(p).__name__ for p in config["processors"]]
+    assert "JSONRenderer" in processor_names
+    assert "TimeStamper" in processor_names
+
+
+def test_handle_exception_logs_structured_error_fields():
+    from app.telemetry import handle_exception
+
+    span = MagicMock()
+    log_calls: list[dict] = []
+
+    class CapturingLogger:
+        def error(self, event, **kw):
+            log_calls.append({"event": event, **kw})
+
+    try:
+        raise RuntimeError("disk full")
+    except RuntimeError as exc:
+        with patch("structlog.get_logger", return_value=CapturingLogger()):
+            handle_exception(span, exc)
+
+    assert len(log_calls) == 1
+    call = log_calls[0]
+    assert call["error_type"] == "RuntimeError"
+    assert call["error_message"] == "disk full"
+    assert "error_stack" in call
+    assert "RuntimeError" in call["error_stack"]

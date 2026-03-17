@@ -140,3 +140,61 @@ async def test_webhook_filters_unsupported_channel(settings, base_webhook_payloa
             json=base_webhook_payload,
         )
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_valid_messenger_message(settings, base_webhook_payload):
+    """MESSENGER channel messages should be accepted the same as LINE."""
+    base_webhook_payload["events"][0]["payload"]["message"]["source"]["type"] = "messenger"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/webhook/conversations",
+            headers={"x-api-key": settings.conversations_webhook_secret},
+            json=base_webhook_payload,
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_filters_non_user_author(settings, base_webhook_payload):
+    """Messages from non-user authors (e.g. business) must be silently skipped."""
+    base_webhook_payload["events"][0]["payload"]["message"]["author"]["type"] = "business"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/webhook/conversations",
+            headers={"x-api-key": settings.conversations_webhook_secret},
+            json=base_webhook_payload,
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_filters_non_text_content(settings, base_webhook_payload):
+    """Non-text content types (e.g. image) must be silently skipped."""
+    base_webhook_payload["events"][0]["payload"]["message"]["content"]["type"] = "image"
+    base_webhook_payload["events"][0]["payload"]["message"]["content"].pop("text", None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/webhook/conversations",
+            headers={"x-api-key": settings.conversations_webhook_secret},
+            json=base_webhook_payload,
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_malformed_json_returns_422(settings):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/webhook/conversations",
+            headers={
+                "x-api-key": settings.conversations_webhook_secret,
+                "content-type": "application/json",
+            },
+            content=b"not-valid-json",
+        )
+    assert response.status_code == 422

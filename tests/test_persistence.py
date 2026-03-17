@@ -136,3 +136,93 @@ async def test_enqueue_flush_passes_parent_trace_id(mock_redis, mock_settings):
             _defer_by=timedelta(seconds=mock_settings.flush_buffer_debounce_seconds),
             parent_trace_id=trace_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_insert_message_buffer(mock_pool, sample_event):
+    await persistence.insert_message_buffer(mock_pool, sample_event)
+    mock_pool.execute.assert_called_once()
+    args = mock_pool.execute.call_args[0]
+    assert "INSERT INTO message_buffer" in args[0]
+    assert args[1] == "conv_123"
+    assert args[2] == "msg_123"
+    assert args[3] == "Hello persistence"
+
+
+@pytest.mark.asyncio
+async def test_insert_message_buffer_skips_when_no_message(mock_pool, sample_event):
+    from app.models import WebhookEvent
+    event_no_msg = WebhookEvent.model_validate({
+        "id": "evt_x",
+        "createdAt": "2026-03-14T02:20:32.440Z",
+        "type": "conversation:message",
+        "payload": {},
+    })
+    await persistence.insert_message_buffer(mock_pool, event_no_msg)
+    mock_pool.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_history_returns_chronological_order():
+    from unittest.mock import AsyncMock
+    conn = AsyncMock()
+    # fetch returns newest-first (DESC), function reverses to oldest-first
+    conn.fetch.return_value = [
+        {"author_type": "business", "body": "Newest reply"},
+        {"author_type": "user", "body": "Middle question"},
+        {"author_type": "user", "body": "First message"},
+    ]
+
+    history = await persistence.get_conversation_history(conn, "conv_123", limit=3)
+
+    assert history[0]["content"] == "First message"
+    assert history[1]["content"] == "Middle question"
+    assert history[2]["content"] == "Newest reply"
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_history_maps_roles_correctly():
+    from unittest.mock import AsyncMock
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {"author_type": "business", "body": "AI answer"},
+        {"author_type": "user", "body": "User question"},
+    ]
+
+    history = await persistence.get_conversation_history(conn, "conv_123")
+
+    roles = {item["content"]: item["role"] for item in history}
+    assert roles["User question"] == "user"
+    assert roles["AI answer"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_history_passes_limit():
+    from unittest.mock import AsyncMock
+    conn = AsyncMock()
+    conn.fetch.return_value = []
+
+    await persistence.get_conversation_history(conn, "conv_123", limit=5)
+
+    args = conn.fetch.call_args[0]
+    assert args[1] == "conv_123"
+    assert args[2] == 5
+
+
+@pytest.mark.asyncio
+async def test_insert_outbound_message():
+    from unittest.mock import AsyncMock
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"channel": "line"}
+
+    await persistence.insert_outbound_message(conn, "conv_123", "Hello from AI")
+
+    conn.execute.assert_called_once()
+    args = conn.execute.call_args[0]
+    assert "INSERT INTO messages" in args[0]
+    # message_id is outbound_<uuid>
+    assert args[1].startswith("outbound_")
+    assert args[2] == "conv_123"
+    assert args[3] == "business"
+    assert args[4] == "line"
+    assert args[5] == "Hello from AI"
