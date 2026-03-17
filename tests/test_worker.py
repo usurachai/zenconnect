@@ -485,3 +485,95 @@ async def test_flush_buffer_no_disclaimer_on_subsequent_messages(mock_ctx):
     assert len(sent_text) == 1
     assert not sent_text[0].startswith(worker.AI_DISCLAIMER)
     assert sent_text[0] == "Follow-up answer"
+
+
+# ---------------------------------------------------------------------------
+# Issue #4: Duplicate prevention — worker-level guards
+# ---------------------------------------------------------------------------
+
+def test_worker_settings_uses_arq_func_wrapper():
+    """
+    WorkerSettings.functions must wrap flush_buffer with arq.func().
+    Without the wrapper, ARQ cannot deserialize the job and the worker
+    silently ignores all queued jobs.
+    """
+    from arq import func as arq_func
+    from app.worker import WorkerSettings
+
+    assert len(WorkerSettings.functions) >= 1
+    for fn in WorkerSettings.functions:
+        # arq.func() returns a Function object with a .coroutine attribute
+        assert hasattr(fn, "coroutine"), (
+            f"{fn!r} must be wrapped with arq.func() — plain callables cause silent job loss"
+        )
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_uses_atomic_delete_returning(mock_ctx):
+    """
+    Buffer must be cleared via DELETE...RETURNING in a single atomic operation.
+    A separate SELECT then DELETE creates a race window where two concurrent
+    workers could both read the same messages.
+    """
+    import datetime
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    with (
+        patch("app.services.rag.ask", new_callable=AsyncMock, return_value="reply"),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock),
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    fetch_sqls = [str(call[0][0]) for call in conn.fetch.call_args_list]
+    atomic_clears = [s for s in fetch_sqls if "DELETE FROM message_buffer" in s and "RETURNING" in s]
+    assert len(atomic_clears) == 1, "Buffer must be cleared with DELETE...RETURNING, not SELECT+DELETE"
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_processes_message_sent_shortly_after_ai_reply(mock_ctx, mock_settings):
+    """
+    A user message arriving shortly after an AI reply must still be processed.
+
+    last_replied_at debounce is NOT used in this architecture because:
+    - Zendesk webhook replays are blocked by ON CONFLICT (event_id) DO NOTHING
+    - AI reply events are filtered by author.type != "user" in the webhook router
+    - The ARQ _job_id stable key handles burst debouncing
+
+    Adding a last_replied_at check would silently drop legitimate user messages.
+    """
+    import datetime
+    ctx, conn = mock_ctx
+
+    # last_replied_at is only 5s ago — well within the 30s debounce window
+    recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=5)
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": recent,
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]  # buffer has content
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask,
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    # Must be called — recent last_replied_at must NOT suppress processing
+    mock_ask.assert_called_once()
+    mock_send.assert_called_once()

@@ -226,3 +226,51 @@ async def test_insert_outbound_message():
     assert args[3] == "business"
     assert args[4] == "line"
     assert args[5] == "Hello from AI"
+
+
+# ---------------------------------------------------------------------------
+# Issue #4: Duplicate prevention — idempotency guards
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_insert_webhook_event_has_on_conflict_do_nothing(mock_pool, sample_event):
+    """SQL must use ON CONFLICT DO NOTHING so replayed webhook events are silently skipped."""
+    await persistence.insert_webhook_event(mock_pool, sample_event, {})
+    sql = mock_pool.execute.call_args[0][0]
+    assert "ON CONFLICT" in sql
+    assert "DO NOTHING" in sql
+
+
+@pytest.mark.asyncio
+async def test_insert_message_has_on_conflict_do_nothing(mock_pool, sample_event):
+    """Message inserts must be idempotent — same message_id from webhook replay must not raise."""
+    await persistence.insert_message(mock_pool, sample_event)
+    sql = mock_pool.execute.call_args[0][0]
+    assert "ON CONFLICT" in sql
+    assert "DO NOTHING" in sql
+
+
+@pytest.mark.asyncio
+async def test_insert_message_buffer_has_on_conflict_do_nothing(mock_pool, sample_event):
+    """Buffer inserts must be idempotent — duplicate message_id must not create a second entry."""
+    await persistence.insert_message_buffer(mock_pool, sample_event)
+    sql = mock_pool.execute.call_args[0][0]
+    assert "ON CONFLICT" in sql
+    assert "DO NOTHING" in sql
+
+
+@pytest.mark.asyncio
+async def test_enqueue_flush_uses_stable_job_id_per_conversation(mock_redis, mock_settings):
+    """
+    enqueue_flush must use a stable _job_id (flush:<conv_id>) so that multiple calls
+    for the same conversation debounce correctly — only the last one wins.
+    """
+    from unittest.mock import patch
+    with (
+        patch("app.services.persistence.get_settings", return_value=mock_settings),
+        patch("app.telemetry.get_current_trace_id", return_value=None),
+    ):
+        await persistence.enqueue_flush(mock_redis, "conv_abc")
+
+    call_kwargs = mock_redis.enqueue_job.call_args[1]
+    assert call_kwargs["_job_id"] == "flush:conv_abc"
