@@ -1,5 +1,5 @@
 import asyncpg
-
+import json
 import structlog
 from typing import Any
 from arq.connections import RedisSettings
@@ -63,6 +63,7 @@ async def flush_buffer(
                 buffer_text = "\n".join([r["body"] for r in rows])
                 log.info("Flushing buffer", text=buffer_text)
                 span.set_attribute("buffer_size", len(rows))
+                span.set_attribute("buffer_text", buffer_text)
 
                 # 3. Keyword detection for handoff
                 intent = handoff.detect_handoff_intent(buffer_text)
@@ -80,11 +81,14 @@ async def flush_buffer(
                 # 5. Call RAG service
                 with tracer.start_as_current_span("rag.ask") as rag_span:
                     rag_span.set_attribute("rag.url", f"{settings.rag_base_url}/api/v1/ask")
+                    rag_span.set_attribute("rag.query", buffer_text)
                     rag_span.set_attribute("rag.query_length", len(buffer_text))
+                    rag_span.set_attribute("rag.history", json.dumps(history, ensure_ascii=False))
                     rag_span.set_attribute("rag.history_length", len(history))
                     rag_span.set_attribute("rag.top_k", 5)
                     try:
                         answer = await rag.ask(buffer_text, history, settings)
+                        rag_span.set_attribute("rag.answer", answer)
                         rag_span.set_attribute("rag.answer_length", len(answer))
                     except Exception as e:
                         handle_exception(rag_span, e)
