@@ -130,7 +130,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     configure_logging()
     setup_tracing()
     settings = get_settings()
-    ctx["pool"] = await asyncpg.create_pool(dsn=settings.database_url)
+    ctx["pool"] = await asyncpg.create_pool(
+        dsn=settings.database_url,
+        min_size=2,
+        max_size=settings.worker_pool_max_size,
+    )
     from arq import create_pool
 
     ctx["redis"] = await create_pool(RedisSettings.from_dsn(settings.redis_url))
@@ -148,6 +152,7 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 class WorkerSettings:
     functions = [func(flush_buffer, keep_result=0)]
+    max_jobs = get_settings().worker_max_jobs
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
