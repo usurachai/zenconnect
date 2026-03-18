@@ -14,7 +14,11 @@ db = Database()
 async def init_pool() -> None:
     settings = get_settings()
     logger.info("Initializing asyncpg pool", url=settings.database_url)
-    db.pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=10)
+    db.pool = await asyncpg.create_pool(
+        dsn=settings.database_url,
+        min_size=1,
+        max_size=settings.db_pool_max_size,
+    )
 
 async def close_pool() -> None:
     if db.pool:

@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     flush_buffer_debounce_seconds: int = 30
 
+    db_pool_max_size: int = 10
+    worker_pool_max_size: int = 10
+    worker_max_jobs: int = 10
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
