@@ -6,7 +6,9 @@ services:
   api:
     build: .
     container_name: zendesk-agent-api-1
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # WEB_CONCURRENCY controls uvicorn worker processes (default: 4)
+    # Each worker creates its own DB pool — budget DB_POOL_MAX_SIZE × WEB_CONCURRENCY connections
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-4}
     env_file: .env
     networks:
       - base_infra_internal-net
@@ -21,9 +23,13 @@ services:
 
   worker:
     build: .
-    container_name: zendesk-agent-worker-1
+    # Scale replicas with: docker compose up --scale worker=N
+    # Each replica adds WORKER_MAX_JOBS concurrent AI reply slots
+    # Budget: replicas × WORKER_POOL_MAX_SIZE DB connections
     command: uv run arq app.worker.WorkerSettings
     env_file: .env
     networks:
       - base_infra_internal-net
     restart: unless-stopped
+    deploy:
+      replicas: 2
