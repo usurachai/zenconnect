@@ -18,5 +18,7 @@ plan/
 tests/
 *.md
 .agents/
+.claude/
+.coverage
 .vscode/
 pyrightconfig.json
