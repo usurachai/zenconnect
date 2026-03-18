@@ -1,4 +1,5 @@
 import asyncpg
+import httpx
 import json
 import structlog
 from typing import Any
@@ -87,7 +88,7 @@ async def flush_buffer(
                     rag_span.set_attribute("rag.history_length", len(history))
                     rag_span.set_attribute("rag.top_k", 5)
                     try:
-                        answer = await rag.ask(buffer_text, history, settings)
+                        answer = await rag.ask(buffer_text, history, settings, client=ctx.get("rag_client"))
                         rag_span.set_attribute("rag.answer", answer)
                         rag_span.set_attribute("rag.answer_length", len(answer))
                     except Exception as e:
@@ -111,7 +112,8 @@ async def flush_buffer(
                     zd_span.set_attribute("reply_length", len(final_reply))
                     try:
                         await zendesk.send_reply(
-                            conversation_id, settings.sunco_app_id, final_reply, settings
+                            conversation_id, settings.sunco_app_id, final_reply, settings,
+                            client=ctx.get("zendesk_client"),
                         )
                     except Exception as e:
                         handle_exception(zd_span, e)
@@ -138,6 +140,8 @@ async def startup(ctx: dict[str, Any]) -> None:
     from arq import create_pool
 
     ctx["redis"] = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    ctx["rag_client"] = httpx.AsyncClient(timeout=30.0)
+    ctx["zendesk_client"] = httpx.AsyncClient(timeout=10.0)
     logger.info("Worker started up")
 
 
@@ -147,6 +151,8 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if redis:
         await redis.aclose()
     await pool.close()
+    await ctx["rag_client"].aclose()
+    await ctx["zendesk_client"].aclose()
     logger.info("Worker shutting down")
 
 

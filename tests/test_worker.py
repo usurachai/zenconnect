@@ -272,13 +272,13 @@ async def test_concurrent_conversations_are_isolated():
     # Mock RAG to return different responses
     rag_responses = ["ConvA Response", "ConvB Response"]
 
-    async def mock_rag_ask(text, history, settings):
+    async def mock_rag_ask(text, history, settings, client=None):
         return rag_responses.pop(0)
 
     # Mock send_reply to track calls
     send_reply_calls = []
 
-    async def mock_send_reply(conv_id, app_id, reply, settings):
+    async def mock_send_reply(conv_id, app_id, reply, settings, client=None):
         send_reply_calls.append((conv_id, app_id, reply))
 
     with (
@@ -439,7 +439,7 @@ async def test_flush_buffer_prepends_disclaimer_on_first_message(mock_ctx):
 
     sent_text: list[str] = []
 
-    async def capture_send(conv_id, app_id, text, settings):
+    async def capture_send(conv_id, app_id, text, settings, client=None):
         sent_text.append(text)
 
     with (
@@ -471,7 +471,7 @@ async def test_flush_buffer_no_disclaimer_on_subsequent_messages(mock_ctx):
 
     sent_text: list[str] = []
 
-    async def capture_send(conv_id, app_id, text, settings):
+    async def capture_send(conv_id, app_id, text, settings, client=None):
         sent_text.append(text)
 
     with (
