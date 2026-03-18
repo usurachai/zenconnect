@@ -108,7 +108,7 @@ async def test_rag_receives_only_target_conversation_messages(mock_settings):
 
     rag_inputs: list[str] = []
 
-    async def capture_rag(text: str, history, settings) -> str:
+    async def capture_rag(text: str, history, settings, client=None) -> str:
         rag_inputs.append(text)
         return "answer"
 
@@ -141,12 +141,12 @@ async def test_reply_routed_to_correct_conversation(mock_settings):
     conn_b = _make_conn(["how do I apply for a credit card"])
     ctx = {"pool": _make_pool(conn_a, conn_b)}
 
-    async def mirror_rag(text: str, history, settings) -> str:
+    async def mirror_rag(text: str, history, settings, client=None) -> str:
         return f"answer_for:{text}"
 
     send_calls: list[tuple[str, str]] = []
 
-    async def capture_send(conv_id: str, app_id: str, reply: str, settings) -> None:
+    async def capture_send(conv_id: str, app_id: str, reply: str, settings, client=None) -> None:
         send_calls.append((conv_id, reply))
 
     with (
@@ -227,12 +227,12 @@ async def test_concurrent_flush_no_cross_contamination(mock_settings):
 
     send_calls: list[tuple[str, str]] = []
 
-    async def interleaving_rag(text: str, history, settings) -> str:
+    async def interleaving_rag(text: str, history, settings, client=None) -> str:
         # Force a context switch here — the other coroutine runs during this gap
         await asyncio.sleep(0)
         return f"REPLY:{text}"
 
-    async def capture_send(conv_id: str, app_id: str, reply: str, settings) -> None:
+    async def capture_send(conv_id: str, app_id: str, reply: str, settings, client=None) -> None:
         send_calls.append((conv_id, reply))
 
     with (
