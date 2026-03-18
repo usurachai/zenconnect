@@ -91,7 +91,7 @@ structlog.configure(
         structlog.dev.set_exc_info,
         inject_trace_context,                     # inject OTEL context
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
+        structlog.processors.JSONRenderer(ensure_ascii=False),  # emit UTF-8 directly (Thai, CJK, etc.)
     ],
     wrapper_class=structlog.make_filtering_bound_logger(20),
     context_class=dict,
@@ -304,7 +304,7 @@ Promtail scraping is configured in the infra base project. No log-shipping code 
 - [ ] Set `OTEL_EXPORTER_OTLP_ENDPOINT` in env
 - [ ] Hardcode `SERVICE_NAME` in `app/main.py`
 - [ ] Call `setup_tracing()` before app creation
-- [ ] Configure structlog with `inject_trace_context` processor
+- [ ] Configure structlog with `inject_trace_context` processor and `JSONRenderer(ensure_ascii=False)`
 - [ ] Bind `service` and `environment` at startup with `structlog.contextvars.bind_contextvars`
 - [ ] Instrument app with `FastAPIInstrumentor` and `HTTPXClientInstrumentor`
 - [ ] Use `handle_exception(span, exc)` in all except blocks
