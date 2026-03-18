@@ -36,7 +36,7 @@ def configure_logging() -> None:
             inject_trace_context,
             _add_service_context,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.JSONRenderer(),
+            structlog.processors.JSONRenderer(ensure_ascii=False),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(20),
         context_class=dict,
