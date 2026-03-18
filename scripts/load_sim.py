@@ -40,6 +40,8 @@ class MessageResult:
     message_index: int
     status_code: int | None
     latency_ms: float
+    text_sent: str = ""
+    response_body: str = ""
     error: str | None = None
 
     @property
@@ -149,6 +151,7 @@ async def simulate_user(
 
         t0 = time.perf_counter()
         status_code = None
+        response_body = ""
         error = None
         try:
             response = await client.post(
@@ -157,6 +160,7 @@ async def simulate_user(
                 headers={"X-API-KEY": api_key},
             )
             status_code = response.status_code
+            response_body = response.text
             if status_code != 200:
                 error = f"HTTP {status_code}: {response.text[:100]}"
         except httpx.ConnectError as e:
@@ -172,6 +176,8 @@ async def simulate_user(
                 message_index=i,
                 status_code=status_code,
                 latency_ms=latency_ms,
+                text_sent=text,
+                response_body=response_body,
                 error=error,
             )
         )
@@ -199,8 +205,21 @@ def print_report(user_results: list[UserResult], wall_time: float) -> bool:
     total_ok = sum(u.success for u in user_results)
     all_latencies = [l for u in user_results for l in u.latencies]
 
+    # Per-conversation message trace
     print("\n" + "=" * 70)
-    print("LOAD TEST RESULTS")
+    print("CONVERSATION TRACES")
+    print("=" * 70)
+    for u in user_results:
+        print(f"\nUser {u.user_index}  conv: {u.conversation_id}")
+        print("-" * 60)
+        for r in u.results:
+            status = "✓" if r.ok else "✗"
+            print(f"  [{status}] sent    : {r.text_sent}")
+            print(f"       response: {r.response_body or r.error}  ({r.latency_ms:.1f}ms)")
+
+    # Summary table
+    print("\n" + "=" * 70)
+    print("SUMMARY")
     print("=" * 70)
     print(f"{'User':<6} {'Conv ID':<22} {'Sent':>5} {'OK':>5} {'p50ms':>7} {'p95ms':>7}  Errors")
     print("-" * 70)
