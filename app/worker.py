@@ -137,13 +137,16 @@ async def flush_buffer(
                         rag_span.add_event("rag.unreachable")
                         log.warning("rag_unreachable", error=str(e))
                         if settings.rag_unavailable_reply:
-                            await zendesk.send_reply(
-                                conversation_id,
-                                conv["app_id"],
-                                settings.rag_unavailable_reply,
-                                settings,
-                                client=ctx.get("zendesk_client"),
-                            )
+                            try:
+                                await zendesk.send_reply(
+                                    conversation_id,
+                                    conv["app_id"],
+                                    settings.rag_unavailable_reply,
+                                    settings,
+                                    client=ctx.get("zendesk_client"),
+                                )
+                            except Exception as zd_err:
+                                log.error("rag_unavailable_reply_failed", error=str(zd_err))
                         return
                     except Exception as e:
                         handle_exception(rag_span, e)

@@ -442,6 +442,35 @@ async def test_flush_buffer_rag_timeout_sends_fallback(mock_ctx, mock_settings):
 
 
 @pytest.mark.asyncio
+async def test_flush_buffer_rag_unavailable_zendesk_fallback_fails_gracefully(mock_ctx, mock_settings):
+    """When RAG is unreachable and the fallback Zendesk call also fails, worker still returns cleanly."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+    mock_settings.rag_unavailable_reply = "ขออภัยครับ ระบบขัดข้องชั่วคราว"
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.services.rag.ask", side_effect=httpx.ConnectError("Connection refused")),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch(
+            "app.services.zendesk.send_reply",
+            side_effect=httpx.HTTPStatusError("400", request=MagicMock(), response=MagicMock(status_code=400)),
+        ),
+    ):
+        # Must NOT raise even when the Zendesk fallback also fails
+        await worker.flush_buffer(ctx, "conv_123")
+
+
+@pytest.mark.asyncio
 async def test_flush_buffer_rag_connect_error_no_fallback_configured(mock_ctx, mock_settings):
     """When RAG is unreachable and no fallback is configured, silently clear buffer without raising."""
     import datetime
