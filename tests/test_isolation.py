@@ -24,6 +24,13 @@ from app.services import persistence
 PAST = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def within_working_hours_by_default():
+    """Prevent working-hours gate from interfering with isolation tests."""
+    with patch("app.worker.is_within_working_hours", return_value=True):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

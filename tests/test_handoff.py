@@ -8,6 +8,13 @@ from app.main import app
 from app.config import get_settings
 
 
+@pytest.fixture(autouse=True)
+def within_working_hours_by_default():
+    """Prevent working-hours gate from blocking handoff tests."""
+    with patch("app.worker.is_within_working_hours", return_value=True):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # detect_handoff_intent — keyword coverage
 # ---------------------------------------------------------------------------

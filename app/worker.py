@@ -2,12 +2,15 @@ import asyncpg
 import httpx
 import json
 import structlog
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 from arq.connections import RedisSettings
 from arq import func
 from opentelemetry import trace
 from app.config import get_settings
 from app.services import persistence, handoff, rag, zendesk
+from app.services.working_hours import is_within_working_hours
 from app.telemetry import configure_logging, handle_exception, setup_tracing
 
 logger = structlog.get_logger()
@@ -46,12 +49,50 @@ async def flush_buffer(
                     log.info("Conversation is in human mode, skipping AI reply")
                     return
 
+                # 2. Working-hours gate
+                tz = ZoneInfo(settings.agent_timezone)
+                local_now = datetime.now(tz)
+                if not is_within_working_hours(settings, now=local_now):
+                    wh_fields = {
+                        "local_time": local_now.isoformat(),
+                        "timezone": settings.agent_timezone,
+                        "weekday": local_now.strftime("%A"),
+                        "hour": local_now.hour,
+                        "working_days": list(settings.agent_working_days),
+                        "hour_start": settings.agent_working_hour_start,
+                        "hour_end": settings.agent_working_hour_end,
+                    }
+                    log.info("outside_working_hours", **wh_fields)
+                    span.set_attribute("outside_working_hours", True)
+                    span.set_attribute("wh.local_time", local_now.isoformat())
+                    span.set_attribute("wh.timezone", settings.agent_timezone)
+                    span.set_attribute("wh.weekday", local_now.strftime("%A"))
+                    span.set_attribute("wh.hour", local_now.hour)
+                    await conn.execute(
+                        "DELETE FROM message_buffer WHERE conversation_id = $1",
+                        conversation_id,
+                    )
+                    if settings.agent_outside_hours_reply:
+                        span.add_event("outside_hours.auto_reply_sent")
+                        log.info("outside_hours.auto_reply_sent", **wh_fields)
+                        await zendesk.send_reply(
+                            conversation_id,
+                            conv["app_id"],
+                            settings.agent_outside_hours_reply,
+                            settings,
+                            client=ctx.get("zendesk_client"),
+                        )
+                    else:
+                        span.add_event("outside_hours.silent_skip")
+                        log.info("outside_hours.silent_skip", **wh_fields)
+                    return
+
                 span.set_attribute("app_id", conv["app_id"])
                 span.set_attribute("channel", conv["channel"])
                 span.set_attribute("agent_mode", conv["agent_mode"])
                 span.set_attribute("is_first_msg_sent", bool(conv["is_first_msg_sent"]))
 
-                # 2. Get and clear buffered messages atomically
+                # 3. Get and clear buffered messages atomically
                 rows = await conn.fetch(
                     "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
                     conversation_id,
