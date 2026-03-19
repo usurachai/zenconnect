@@ -100,7 +100,8 @@ async def test_execute_handoff_to_human_updates_db_and_sends_farewell() -> None:
     assert conv_id == "conv_123"
 
     mock_send.assert_called_once()
-    reply_text: str = mock_send.call_args[0][2]
+    _, used_app_id, reply_text = mock_send.call_args[0][:3]
+    assert used_app_id == "app_123"
     assert "กำลังโอนสาย" in reply_text
 
 
@@ -133,12 +134,7 @@ async def test_execute_handoff_to_human_sql_sets_agent_mode_and_human_requested_
 
 @pytest.mark.asyncio
 async def test_execute_handoff_to_human_zendesk_http_status_error_is_swallowed() -> None:
-    """An httpx.HTTPStatusError from zendesk.send_reply must not propagate.
-
-    BUG NOTE: execute_handoff_to_human accepts app_id as a parameter but ignores it,
-    always using settings.sunco_app_id instead.  The test passes "app_other" to confirm
-    the function still runs without error regardless (tracked in issue #26).
-    """
+    """An httpx.HTTPStatusError from zendesk.send_reply must not propagate."""
     conn = AsyncMock()
 
     request = httpx.Request("POST", "http://example.com")
@@ -168,7 +164,8 @@ async def test_execute_return_to_ai_updates_db_and_sends_confirmation() -> None:
     assert conv_id == "conv_123"
 
     mock_send.assert_called_once()
-    reply_text: str = mock_send.call_args[0][2]
+    _, used_app_id, reply_text = mock_send.call_args[0][:3]
+    assert used_app_id == "app_123"
     assert "AI" in reply_text
 
 
