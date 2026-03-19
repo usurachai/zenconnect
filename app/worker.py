@@ -2,7 +2,9 @@ import asyncpg
 import httpx
 import json
 import structlog
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 from arq.connections import RedisSettings
 from arq import func
 from opentelemetry import trace
@@ -48,14 +50,31 @@ async def flush_buffer(
                     return
 
                 # 2. Working-hours gate
-                if not is_within_working_hours(settings):
-                    log.info("outside_working_hours", conversation_id=conversation_id)
+                tz = ZoneInfo(settings.agent_timezone)
+                local_now = datetime.now(tz)
+                if not is_within_working_hours(settings, now=local_now):
+                    wh_fields = {
+                        "local_time": local_now.isoformat(),
+                        "timezone": settings.agent_timezone,
+                        "weekday": local_now.strftime("%A"),
+                        "hour": local_now.hour,
+                        "working_days": list(settings.agent_working_days),
+                        "hour_start": settings.agent_working_hour_start,
+                        "hour_end": settings.agent_working_hour_end,
+                    }
+                    log.info("outside_working_hours", **wh_fields)
                     span.set_attribute("outside_working_hours", True)
+                    span.set_attribute("wh.local_time", local_now.isoformat())
+                    span.set_attribute("wh.timezone", settings.agent_timezone)
+                    span.set_attribute("wh.weekday", local_now.strftime("%A"))
+                    span.set_attribute("wh.hour", local_now.hour)
                     await conn.execute(
                         "DELETE FROM message_buffer WHERE conversation_id = $1",
                         conversation_id,
                     )
                     if settings.agent_outside_hours_reply:
+                        span.add_event("outside_hours.auto_reply_sent")
+                        log.info("outside_hours.auto_reply_sent", **wh_fields)
                         await zendesk.send_reply(
                             conversation_id,
                             conv["app_id"],
@@ -63,6 +82,9 @@ async def flush_buffer(
                             settings,
                             client=ctx.get("zendesk_client"),
                         )
+                    else:
+                        span.add_event("outside_hours.silent_skip")
+                        log.info("outside_hours.silent_skip", **wh_fields)
                     return
 
                 span.set_attribute("app_id", conv["app_id"])
