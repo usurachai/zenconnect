@@ -54,7 +54,7 @@ async def execute_handoff_to_human(
     from app.services import zendesk
 
     try:
-        await zendesk.send_reply(conversation_id, settings.sunco_app_id, farewell, settings)
+        await zendesk.send_reply(conversation_id, app_id, farewell, settings)
     except Exception as e:
         log.error("handoff_reply_failed", error=str(e))
 
@@ -78,7 +78,7 @@ async def execute_return_to_ai(
     from app.services import zendesk
 
     try:
-        await zendesk.send_reply(conversation_id, settings.sunco_app_id, confirmation, settings)
+        await zendesk.send_reply(conversation_id, app_id, confirmation, settings)
     except Exception as e:
         log.error("return_to_ai_reply_failed", error=str(e))
 
