@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     agent_working_hour_end: int = 18  # exclusive (replies sent for hour < end)
     agent_outside_hours_reply: str | None = None  # None = silent; set text to auto-reply
 
+    rag_unavailable_reply: str | None = None  # None = silent; set text to send when RAG is unreachable
+
     db_pool_max_size: int = 10
     worker_pool_max_size: int = 10
     worker_max_jobs: int = 10
