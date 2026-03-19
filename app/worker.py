@@ -140,7 +140,7 @@ async def flush_buffer(
                             try:
                                 await zendesk.send_reply(
                                     conversation_id,
-                                    conv["app_id"],
+                                    settings.sunco_app_id,
                                     settings.rag_unavailable_reply,
                                     settings,
                                     client=ctx.get("zendesk_client"),
