@@ -1,6 +1,18 @@
+import datetime
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from app import worker
+
+
+@pytest.fixture(autouse=True)
+def within_working_hours_by_default():
+    """Default all worker tests to 'within working hours' so existing tests are unaffected.
+
+    Working-hours-specific tests override this by patching is_within_working_hours
+    themselves inside their own `with patch(...)` block, which takes precedence.
+    """
+    with patch("app.worker.is_within_working_hours", return_value=True):
+        yield
 
 
 @pytest.fixture
@@ -488,6 +500,98 @@ async def test_flush_buffer_no_disclaimer_on_subsequent_messages(mock_ctx):
 
 
 # ---------------------------------------------------------------------------
+# Working hours gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_outside_working_hours_silent_mode(mock_ctx, mock_settings):
+    """Outside working hours with no reply configured → buffer cleared, no RAG, no Zendesk."""
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": False,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    # No out-of-hours reply configured (silent mode)
+    mock_settings.agent_outside_hours_reply = None
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.worker.is_within_working_hours", return_value=False),
+        patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask,
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_ask.assert_not_called()
+    mock_send.assert_not_called()
+    # Buffer must be cleared via conn.execute DELETE
+    execute_sqls = [str(call[0][0]) for call in conn.execute.call_args_list]
+    assert any("DELETE FROM message_buffer" in s for s in execute_sqls)
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_outside_working_hours_sends_reply(mock_ctx, mock_settings):
+    """Outside working hours with reply configured → buffer cleared, no RAG, Zendesk called."""
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": False,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    mock_settings.agent_outside_hours_reply = "We are available Mon–Fri 09:00–18:00 (BKK)"
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.worker.is_within_working_hours", return_value=False),
+        patch("app.services.rag.ask", new_callable=AsyncMock) as mock_ask,
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_ask.assert_not_called()
+    mock_send.assert_called_once()
+    sent_text = mock_send.call_args[0][2]  # positional: conv_id, app_id, text
+    assert sent_text == "We are available Mon–Fri 09:00–18:00 (BKK)"
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_within_working_hours_proceeds_normally(mock_ctx, mock_settings):
+    """Inside working hours → normal RAG + Zendesk flow runs."""
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.worker.is_within_working_hours", return_value=True),
+        patch("app.services.rag.ask", new_callable=AsyncMock, return_value="AI reply") as mock_ask,
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.persistence.insert_outbound_message", new_callable=AsyncMock),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_ask.assert_called_once()
+    mock_send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Issue #4: Duplicate prevention — worker-level guards
 # ---------------------------------------------------------------------------
 
@@ -497,7 +601,6 @@ def test_worker_settings_uses_arq_func_wrapper():
     Without the wrapper, ARQ cannot deserialize the job and the worker
     silently ignores all queued jobs.
     """
-    from arq import func as arq_func
     from app.worker import WorkerSettings
 
     assert len(WorkerSettings.functions) >= 1

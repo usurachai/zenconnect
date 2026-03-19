@@ -16,6 +16,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi",
     "opentelemetry-instrumentation-httpx",
     "opentelemetry-exporter-otlp-proto-grpc",
+    "tzdata",
 ]
 
 [project.optional-dependencies]

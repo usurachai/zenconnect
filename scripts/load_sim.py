@@ -76,7 +76,7 @@ class UserResult:
 # Payload builder
 # ---------------------------------------------------------------------------
 
-def build_payload(conversation_id: str, user_id: str, message_text: str) -> dict:
+def build_payload(conversation_id: str, user_id: str, message_text: str) -> dict[str, object]:
     """Build a valid WebhookPayload matching the pydantic model exactly."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     return {
@@ -203,7 +203,7 @@ def percentile(data: list[float], p: int) -> float:
 def print_report(user_results: list[UserResult], wall_time: float) -> bool:
     total_sent = sum(u.sent for u in user_results)
     total_ok = sum(u.success for u in user_results)
-    all_latencies = [l for u in user_results for l in u.latencies]
+    all_latencies = [lat for u in user_results for lat in u.latencies]
 
     # Per-conversation message trace
     print("\n" + "=" * 70)
@@ -273,7 +273,7 @@ async def main() -> int:
         print("ERROR: --api-key or CONVERSATIONS_WEBHOOK_SECRET env var is required", file=sys.stderr)
         return 1
 
-    print(f"Starting load simulation:")
+    print("Starting load simulation:")
     print(f"  Target      : {args.base_url}/webhook/conversations")
     print(f"  Users       : {args.num_users}")
     print(f"  Msgs/user   : {args.messages_per_user}")

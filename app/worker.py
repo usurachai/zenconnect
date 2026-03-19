@@ -8,6 +8,7 @@ from arq import func
 from opentelemetry import trace
 from app.config import get_settings
 from app.services import persistence, handoff, rag, zendesk
+from app.services.working_hours import is_within_working_hours
 from app.telemetry import configure_logging, handle_exception, setup_tracing
 
 logger = structlog.get_logger()
@@ -46,12 +47,30 @@ async def flush_buffer(
                     log.info("Conversation is in human mode, skipping AI reply")
                     return
 
+                # 2. Working-hours gate
+                if not is_within_working_hours(settings):
+                    log.info("outside_working_hours", conversation_id=conversation_id)
+                    span.set_attribute("outside_working_hours", True)
+                    await conn.execute(
+                        "DELETE FROM message_buffer WHERE conversation_id = $1",
+                        conversation_id,
+                    )
+                    if settings.agent_outside_hours_reply:
+                        await zendesk.send_reply(
+                            conversation_id,
+                            conv["app_id"],
+                            settings.agent_outside_hours_reply,
+                            settings,
+                            client=ctx.get("zendesk_client"),
+                        )
+                    return
+
                 span.set_attribute("app_id", conv["app_id"])
                 span.set_attribute("channel", conv["channel"])
                 span.set_attribute("agent_mode", conv["agent_mode"])
                 span.set_attribute("is_first_msg_sent", bool(conv["is_first_msg_sent"]))
 
-                # 2. Get and clear buffered messages atomically
+                # 3. Get and clear buffered messages atomically
                 rows = await conn.fetch(
                     "DELETE FROM message_buffer WHERE conversation_id = $1 RETURNING body",
                     conversation_id,
