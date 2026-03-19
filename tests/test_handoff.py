@@ -11,7 +11,11 @@ from app.config import get_settings
 @pytest.fixture(autouse=True)
 def within_working_hours_by_default():
     """Prevent working-hours gate from blocking handoff tests."""
-    with patch("app.worker.is_within_working_hours", return_value=True):
+    from zoneinfo import ZoneInfo
+    with (
+        patch("app.worker.ZoneInfo", return_value=ZoneInfo("Asia/Bangkok")),
+        patch("app.worker.is_within_working_hours", return_value=True),
+    ):
         yield
 
 

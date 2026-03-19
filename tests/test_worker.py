@@ -652,12 +652,12 @@ async def test_flush_buffer_outside_working_hours_silent_mode(mock_ctx, mock_set
 
 @pytest.mark.asyncio
 async def test_flush_buffer_outside_working_hours_sends_reply(mock_ctx, mock_settings):
-    """Outside working hours with reply configured → buffer cleared, no RAG, Zendesk called."""
+    """Outside working hours with reply configured → buffer cleared, no RAG, Zendesk called with settings.sunco_app_id."""
     ctx, conn = mock_ctx
     conn.fetchrow.return_value = {
         "agent_mode": "ai",
         "channel": "line",
-        "app_id": "app_123",
+        "app_id": "different_app_id",  # differs from sunco_app_id to catch credential mismatch
         "is_first_msg_sent": False,
         "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
     }
@@ -675,8 +675,9 @@ async def test_flush_buffer_outside_working_hours_sends_reply(mock_ctx, mock_set
 
     mock_ask.assert_not_called()
     mock_send.assert_called_once()
-    sent_text = mock_send.call_args[0][2]  # positional: conv_id, app_id, text
-    assert sent_text == "We are available Mon–Fri 09:00–18:00 (BKK)"
+    call_args = mock_send.call_args[0]  # positional: conv_id, app_id, text, ...
+    assert call_args[1] == mock_settings.sunco_app_id  # must use settings, not conv["app_id"]
+    assert call_args[2] == "We are available Mon–Fri 09:00–18:00 (BKK)"
 
 
 @pytest.mark.asyncio

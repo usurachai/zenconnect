@@ -77,7 +77,7 @@ async def flush_buffer(
                         log.info("outside_hours.auto_reply_sent", **wh_fields)
                         await zendesk.send_reply(
                             conversation_id,
-                            conv["app_id"],
+                            settings.sunco_app_id,
                             settings.agent_outside_hours_reply,
                             settings,
                             client=ctx.get("zendesk_client"),
