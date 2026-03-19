@@ -133,7 +133,7 @@ async def flush_buffer(
                         rag_span.set_attribute("rag.answer", answer)
                         rag_span.set_attribute("rag.answer_length", len(answer))
                     except (httpx.ConnectError, httpx.TimeoutException) as e:
-                        handle_exception(rag_span, e)
+                        rag_span.record_exception(e)
                         rag_span.add_event("rag.unreachable")
                         log.warning("rag_unreachable", error=str(e))
                         if settings.rag_unavailable_reply:

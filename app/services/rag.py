@@ -55,6 +55,8 @@ async def ask(
     except httpx.HTTPStatusError as e:
         log.error("rag_http_error", status_code=e.response.status_code, error=str(e))
         raise
+    except (httpx.ConnectError, httpx.TimeoutException):
+        raise  # let worker.py handle logging — these are expected when RAG is down
     except Exception as e:
         log.error("rag_client_error", error=str(e))
         raise
