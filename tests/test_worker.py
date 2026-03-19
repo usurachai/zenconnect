@@ -383,6 +383,92 @@ async def test_flush_buffer_rag_error_propagates(mock_ctx):
 
 
 @pytest.mark.asyncio
+async def test_flush_buffer_rag_connect_error_sends_fallback(mock_ctx, mock_settings):
+    """When RAG is unreachable (ConnectError), send fallback reply and return without raising."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+    mock_settings.rag_unavailable_reply = "ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาติดต่อใหม่อีกครั้ง"
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.services.rag.ask", side_effect=httpx.ConnectError("Connection refused")),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        # Must NOT raise — graceful degradation
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_send.assert_called_once()
+    sent_text = mock_send.call_args[0][2]
+    assert sent_text == "ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาติดต่อใหม่อีกครั้ง"
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_rag_timeout_sends_fallback(mock_ctx, mock_settings):
+    """When RAG times out, send fallback reply and return without raising."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+    mock_settings.rag_unavailable_reply = "ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาติดต่อใหม่อีกครั้ง"
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.services.rag.ask", side_effect=httpx.TimeoutException("Timed out")),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_send.assert_called_once()
+    sent_text = mock_send.call_args[0][2]
+    assert sent_text == "ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาติดต่อใหม่อีกครั้ง"
+
+
+@pytest.mark.asyncio
+async def test_flush_buffer_rag_connect_error_no_fallback_configured(mock_ctx, mock_settings):
+    """When RAG is unreachable and no fallback is configured, silently clear buffer without raising."""
+    import datetime
+    import httpx
+    ctx, conn = mock_ctx
+    conn.fetchrow.return_value = {
+        "agent_mode": "ai",
+        "channel": "line",
+        "app_id": "app_123",
+        "is_first_msg_sent": True,
+        "last_replied_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc),
+    }
+    conn.fetch.return_value = [{"body": "Hello"}]
+    mock_settings.rag_unavailable_reply = None
+
+    with (
+        patch("app.worker.get_settings", return_value=mock_settings),
+        patch("app.services.rag.ask", side_effect=httpx.ConnectError("Connection refused")),
+        patch("app.services.persistence.get_conversation_history", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+    ):
+        await worker.flush_buffer(ctx, "conv_123")
+
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_flush_buffer_zendesk_error_propagates(mock_ctx):
     """Zendesk failure must propagate so ARQ can retry the job."""
     import datetime
