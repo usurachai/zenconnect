@@ -91,16 +91,14 @@ async def test_send_reply_raises_on_network_error(
 # find_ticket_by_conversation_id
 # ---------------------------------------------------------------------------
 
-def _sunco_conv_response(ticket_id: int | None) -> dict:
-    metadata: dict = {}
-    if ticket_id is not None:
-        metadata["zd:ticket"] = {"_id": str(ticket_id)}
-    return {"conversation": {"id": "conv_abc", "metadata": metadata}}
+def _tickets_response(ticket_id: int | None) -> dict:
+    tickets = [{"id": ticket_id}] if ticket_id is not None else []
+    return {"tickets": tickets}
 
 
 @pytest.mark.asyncio
 async def test_find_ticket_by_conversation_id_found(httpx_mock: HTTPXMock, settings: Settings) -> None:
-    httpx_mock.add_response(status_code=200, json=_sunco_conv_response(9876))
+    httpx_mock.add_response(status_code=200, json=_tickets_response(9876))
 
     result = await zendesk.find_ticket_by_conversation_id("conv_abc", settings)
 
@@ -109,7 +107,7 @@ async def test_find_ticket_by_conversation_id_found(httpx_mock: HTTPXMock, setti
 
 @pytest.mark.asyncio
 async def test_find_ticket_by_conversation_id_not_found(httpx_mock: HTTPXMock, settings: Settings) -> None:
-    httpx_mock.add_response(status_code=200, json=_sunco_conv_response(None))
+    httpx_mock.add_response(status_code=200, json=_tickets_response(None))
 
     result = await zendesk.find_ticket_by_conversation_id("conv_abc", settings)
 
@@ -118,21 +116,19 @@ async def test_find_ticket_by_conversation_id_not_found(httpx_mock: HTTPXMock, s
 
 @pytest.mark.asyncio
 async def test_find_ticket_by_conversation_id_uses_correct_url(httpx_mock: HTTPXMock, settings: Settings) -> None:
-    httpx_mock.add_response(status_code=200, json=_sunco_conv_response(None))
+    from urllib.parse import unquote
+    httpx_mock.add_response(status_code=200, json=_tickets_response(None))
 
-    await zendesk.find_ticket_by_conversation_id("conv_abc", settings)
+    await zendesk.find_ticket_by_conversation_id("conv_xyz", settings)
 
     request = httpx_mock.get_requests()[0]
-    expected_url = (
-        f"https://{settings.zendesk_subdomain}.zendesk.com"
-        f"/sc/v2/apps/{settings.sunco_app_id}/conversations/conv_abc"
-    )
-    assert str(request.url) == expected_url
+    assert f"https://{settings.zendesk_subdomain}.zendesk.com/api/v2/tickets.json" in str(request.url)
+    assert "external_id=conv_xyz" in unquote(str(request.url))
 
 
 @pytest.mark.asyncio
-async def test_find_ticket_by_conversation_id_uses_integration_key_auth(httpx_mock: HTTPXMock, settings: Settings) -> None:
-    httpx_mock.add_response(status_code=200, json=_sunco_conv_response(None))
+async def test_find_ticket_by_conversation_id_uses_correct_auth(httpx_mock: HTTPXMock, settings: Settings) -> None:
+    httpx_mock.add_response(status_code=200, json=_tickets_response(None))
 
     await zendesk.find_ticket_by_conversation_id("conv_abc", settings)
 
@@ -141,7 +137,7 @@ async def test_find_ticket_by_conversation_id_uses_integration_key_auth(httpx_mo
     assert auth_header.startswith("Basic ")
 
     decoded = base64.b64decode(auth_header[6:]).decode()
-    assert decoded == f"{settings.integration_key_id}:{settings.integration_key_secret}"
+    assert decoded == f"{settings.zendesk_email}/token:{settings.zendesk_api_token}"
 
 
 @pytest.mark.asyncio
