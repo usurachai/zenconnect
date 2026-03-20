@@ -62,14 +62,17 @@ async def find_ticket_by_conversation_id(
     settings: Settings,
     client: httpx.AsyncClient | None = None,
 ) -> str | None:
-    """Find a Zendesk Support ticket linked to a SunCo conversation ID.
+    """Find the Zendesk Support ticket linked to a SunCo conversation.
 
-    Uses the Search API: GET /api/v2/search.json?query=fieldvalue:{conversation_id}
-    Auth: Basic ({email}/token : {api_token})
+    Uses the SunCo Conversations API: GET /sc/v2/apps/{appId}/conversations/{conversationId}
+    Auth: Basic (integration_key_id : integration_key_secret)
+    The linked ticket ID is stored in conversation.metadata["zd:ticket"]["_id"].
     Returns the ticket ID string if found, None otherwise.
     """
-    url = f"https://{settings.zendesk_subdomain}.zendesk.com/api/v2/search.json"
-    auth_user = f"{settings.zendesk_email}/token"
+    url = (
+        f"https://{settings.zendesk_subdomain}.zendesk.com"
+        f"/sc/v2/apps/{settings.sunco_app_id}/conversations/{conversation_id}"
+    )
     log = logger.bind(conversation_id=conversation_id)
 
     _owned = client is None
@@ -77,15 +80,14 @@ async def find_ticket_by_conversation_id(
     try:
         response = await _client.get(
             url,
-            params={"query": f"fieldvalue:{conversation_id}"},
-            auth=(auth_user, settings.zendesk_api_token),
+            auth=(settings.integration_key_id, settings.integration_key_secret),
         )
         response.raise_for_status()
-        results = response.json().get("results", [])
-        if results:
-            ticket_id = str(results[0]["id"])
+        metadata = response.json().get("conversation", {}).get("metadata", {})
+        ticket_id = metadata.get("zd:ticket", {}).get("_id")
+        if ticket_id:
             log.info("zendesk_ticket_found", ticket_id=ticket_id)
-            return ticket_id
+            return str(ticket_id)
         log.info("zendesk_ticket_not_found")
         return None
     except httpx.HTTPStatusError as e:
