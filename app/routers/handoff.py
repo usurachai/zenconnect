@@ -3,7 +3,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from app.db import get_pool
 from app.services import handoff
-from app.routers.webhook import verify_api_key
 
 router = APIRouter(prefix="/handoff", tags=["handoff"])
 
@@ -19,9 +18,8 @@ async def get_handoff_status(conversation_id: str, pool: asyncpg.Pool = Depends(
 
 @router.post("/{conversation_id}/human")
 async def handoff_manual_human(
-    conversation_id: str, 
+    conversation_id: str,
     pool: asyncpg.Pool = Depends(get_pool),
-    _auth: None = Depends(verify_api_key)
 ) -> dict[str, str]:
     row = await pool.fetchrow("SELECT app_id FROM conversations WHERE conversation_id = $1", conversation_id)
     if not row:
@@ -32,9 +30,8 @@ async def handoff_manual_human(
 
 @router.post("/{conversation_id}/ai")
 async def handoff_manual_ai(
-    conversation_id: str, 
+    conversation_id: str,
     pool: asyncpg.Pool = Depends(get_pool),
-    _auth: None = Depends(verify_api_key)
 ) -> dict[str, str]:
     row = await pool.fetchrow("SELECT app_id FROM conversations WHERE conversation_id = $1", conversation_id)
     if not row:
