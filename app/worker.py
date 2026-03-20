@@ -111,10 +111,10 @@ async def flush_buffer(
                 intent = handoff.detect_handoff_intent(buffer_text)
                 span.set_attribute("handoff_intent", intent or "none")
                 if intent == "human":
-                    await handoff.execute_handoff_to_human(conn, conversation_id, conv["app_id"], client=ctx.get("zendesk_client"))
+                    await handoff.execute_handoff_to_human(conn, conversation_id, settings.sunco_app_id, client=ctx.get("zendesk_client"))
                     return
                 elif intent == "ai":
-                    await handoff.execute_return_to_ai(conn, conversation_id, conv["app_id"], client=ctx.get("zendesk_client"))
+                    await handoff.execute_return_to_ai(conn, conversation_id, settings.sunco_app_id, client=ctx.get("zendesk_client"))
                     return
 
                 # 4. Prepare combined query and fetch history
