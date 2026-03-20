@@ -27,6 +27,7 @@ def mock_settings() -> Settings:
         integration_key_id="int_key",
         integration_key_secret="int_secret",
         zendesk_subdomain="testdomain",
+        zendesk_email="admin@test.com",
         zendesk_api_token="zd_token",
         zendesk_agent_group_id="group_1",
         rag_base_url="http://rag-service",

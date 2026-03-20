@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     integration_key_id: str
     integration_key_secret: str
     zendesk_subdomain: str
+    zendesk_email: str
     zendesk_api_token: str
     zendesk_agent_group_id: str
 
