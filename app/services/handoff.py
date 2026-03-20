@@ -1,7 +1,8 @@
 import asyncpg
+import httpx
 import structlog
 from typing import Literal, Optional
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 logger = structlog.get_logger()
 
@@ -28,16 +29,39 @@ def detect_handoff_intent(text: str) -> Optional[Literal["human", "ai"]]:
     return None
 
 
-async def post_zendesk_internal_note(subdomain: str, ticket_id: str, token: str, body: str) -> None:
-    # This uses the Zendesk Tickets API
-    # Note: ticket_id is needed. We might need to map conversation_id to ticket_id.
-    # SunCo usually creates a ticket or you can find it.
-    # For now, let's assume we have it or we'll find it via external_id.
-    pass
+async def post_zendesk_internal_note(
+    conversation_id: str,
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    """Notify human agents by finding the linked ticket and assigning it with an internal note."""
+    from app.services import zendesk
+
+    log = logger.bind(conversation_id=conversation_id)
+    try:
+        ticket_id = await zendesk.find_ticket_by_conversation_id(conversation_id, settings, client=client)
+        if ticket_id is None:
+            log.warning("handoff_notify_no_ticket_found")
+            return
+        await zendesk.assign_ticket(
+            ticket_id,
+            settings,
+            group_id=settings.zendesk_agent_group_id,
+            priority="high",
+            internal_note="ลูกค้าร้องขอการสนทนากับเจ้าหน้าที่ กรุณาตรวจสอบการสนทนานี้",
+            tags=["handoff_requested"],
+            client=client,
+        )
+        log.info("handoff_zendesk_notified", ticket_id=ticket_id)
+    except Exception as e:
+        log.error("handoff_notify_failed", error=str(e))
 
 
 async def execute_handoff_to_human(
-    conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, app_id: str
+    conn: asyncpg.Connection | asyncpg.Pool,
+    conversation_id: str,
+    app_id: str,
+    client: httpx.AsyncClient | None = None,
 ) -> None:
     settings = get_settings()
     log = logger.bind(conversation_id=conversation_id)
@@ -54,17 +78,24 @@ async def execute_handoff_to_human(
     from app.services import zendesk
 
     try:
-        await zendesk.send_reply(conversation_id, app_id, farewell, settings)
+        await zendesk.send_reply(conversation_id, app_id, farewell, settings, client=client)
     except Exception as e:
         log.error("handoff_reply_failed", error=str(e))
 
-    # 3. Notify Zendesk Agents (Internal Note / Ticket Assignment)
-    # TODO: Implementation depends on how conversation maps to ticket
+    # 3. Notify Zendesk agents via Support Tickets API
+    try:
+        await post_zendesk_internal_note(conversation_id, settings, client=client)
+    except Exception as e:
+        log.error("handoff_notify_unexpected_error", error=str(e))
+
     log.info("Handoff to human executed")
 
 
 async def execute_return_to_ai(
-    conn: asyncpg.Connection | asyncpg.Pool, conversation_id: str, app_id: str
+    conn: asyncpg.Connection | asyncpg.Pool,
+    conversation_id: str,
+    app_id: str,
+    client: httpx.AsyncClient | None = None,
 ) -> None:
     settings = get_settings()
     log = logger.bind(conversation_id=conversation_id)
@@ -78,7 +109,7 @@ async def execute_return_to_ai(
     from app.services import zendesk
 
     try:
-        await zendesk.send_reply(conversation_id, app_id, confirmation, settings)
+        await zendesk.send_reply(conversation_id, app_id, confirmation, settings, client=client)
     except Exception as e:
         log.error("return_to_ai_reply_failed", error=str(e))
 

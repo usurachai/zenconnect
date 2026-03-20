@@ -91,7 +91,10 @@ def test_detect_handoff_intent_thai_keyword_embedded_in_sentence() -> None:
 async def test_execute_handoff_to_human_updates_db_and_sends_farewell() -> None:
     conn = AsyncMock()
 
-    with patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send:
+    with (
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock) as mock_send,
+        patch("app.services.handoff.post_zendesk_internal_note", new_callable=AsyncMock),
+    ):
         await handoff.execute_handoff_to_human(conn, "conv_123", "app_123")
 
     conn.execute.assert_called_once()
@@ -110,7 +113,10 @@ async def test_execute_handoff_to_human_zendesk_failure_is_caught() -> None:
     """Zendesk failure during handoff must be logged, not crash the worker."""
     conn = AsyncMock()
 
-    with patch("app.services.zendesk.send_reply", side_effect=Exception("zendesk down")):
+    with (
+        patch("app.services.zendesk.send_reply", side_effect=Exception("zendesk down")),
+        patch("app.services.handoff.post_zendesk_internal_note", new_callable=AsyncMock),
+    ):
         # Should NOT raise
         await handoff.execute_handoff_to_human(conn, "conv_123", "app_123")
 
@@ -123,7 +129,10 @@ async def test_execute_handoff_to_human_sql_sets_agent_mode_and_human_requested_
     """SQL must update both agent_mode='human' AND human_requested_at in the same statement."""
     conn = AsyncMock()
 
-    with patch("app.services.zendesk.send_reply", new_callable=AsyncMock):
+    with (
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock),
+        patch("app.services.handoff.post_zendesk_internal_note", new_callable=AsyncMock),
+    ):
         await handoff.execute_handoff_to_human(conn, "conv_456", "app_456")
 
     conn.execute.assert_called_once()
@@ -141,10 +150,86 @@ async def test_execute_handoff_to_human_zendesk_http_status_error_is_swallowed()
     response = httpx.Response(500, request=request)
     error = httpx.HTTPStatusError("500 error", request=request, response=response)
 
-    with patch("app.services.zendesk.send_reply", side_effect=error):
+    with (
+        patch("app.services.zendesk.send_reply", side_effect=error),
+        patch("app.services.handoff.post_zendesk_internal_note", new_callable=AsyncMock),
+    ):
         await handoff.execute_handoff_to_human(conn, "conv_err", "app_other")
 
     conn.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_handoff_to_human_calls_notification() -> None:
+    """execute_handoff_to_human must call post_zendesk_internal_note after the farewell."""
+    conn = AsyncMock()
+
+    with (
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock),
+        patch("app.services.handoff.post_zendesk_internal_note", new_callable=AsyncMock) as mock_notify,
+    ):
+        await handoff.execute_handoff_to_human(conn, "conv_123", "app_123")
+
+    mock_notify.assert_called_once()
+    call_kwargs = mock_notify.call_args
+    assert call_kwargs[0][0] == "conv_123"  # conversation_id positional arg
+
+
+@pytest.mark.asyncio
+async def test_execute_handoff_to_human_notification_failure_does_not_propagate() -> None:
+    """Notification failure must be swallowed — never break the main handoff flow."""
+    conn = AsyncMock()
+
+    with (
+        patch("app.services.zendesk.send_reply", new_callable=AsyncMock),
+        patch("app.services.handoff.post_zendesk_internal_note", side_effect=Exception("notify boom")),
+    ):
+        # Should NOT raise
+        await handoff.execute_handoff_to_human(conn, "conv_123", "app_123")
+
+    conn.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# post_zendesk_internal_note
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_post_zendesk_internal_note_ticket_found_calls_assign(mock_settings) -> None:
+    """When ticket is found, assign_ticket is called with correct params."""
+    with (
+        patch("app.services.zendesk.find_ticket_by_conversation_id", new_callable=AsyncMock, return_value="9876") as mock_find,
+        patch("app.services.zendesk.assign_ticket", new_callable=AsyncMock) as mock_assign,
+    ):
+        await handoff.post_zendesk_internal_note("conv_abc", mock_settings)
+
+    mock_find.assert_called_once()
+    mock_assign.assert_called_once()
+    _, call_kwargs = mock_assign.call_args[0], mock_assign.call_args[1]
+    assert mock_assign.call_args[0][0] == "9876"
+    assert call_kwargs.get("group_id") == mock_settings.zendesk_agent_group_id
+    assert call_kwargs.get("priority") == "high"
+    assert "handoff_requested" in (call_kwargs.get("tags") or [])
+
+
+@pytest.mark.asyncio
+async def test_post_zendesk_internal_note_ticket_not_found_does_not_call_assign(mock_settings) -> None:
+    """When ticket is not found, assign_ticket must NOT be called."""
+    with (
+        patch("app.services.zendesk.find_ticket_by_conversation_id", new_callable=AsyncMock, return_value=None),
+        patch("app.services.zendesk.assign_ticket", new_callable=AsyncMock) as mock_assign,
+    ):
+        await handoff.post_zendesk_internal_note("conv_abc", mock_settings)
+
+    mock_assign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_zendesk_internal_note_find_error_does_not_propagate(mock_settings) -> None:
+    """Exceptions from find_ticket_by_conversation_id must be swallowed."""
+    with patch("app.services.zendesk.find_ticket_by_conversation_id", side_effect=Exception("search down")):
+        # Should NOT raise
+        await handoff.post_zendesk_internal_note("conv_abc", mock_settings)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +311,7 @@ async def test_flush_buffer_human_keyword_triggers_execute_handoff_to_human() ->
     ):
         await flush_buffer(ctx, "conv_hk")
 
-    mock_handoff.assert_called_once_with(conn, "conv_hk", "app_test")
+    mock_handoff.assert_called_once_with(conn, "conv_hk", "app_test", client=None)
     mock_rag.assert_not_called()
 
 
